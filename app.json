@@ -1,4 +1,7 @@
 {
   "name": "discountdostApp",
-  "displayName": "discountdostApp"
+  "displayName": "DiscountDost",
+  "plugins": [
+    "expo-barcode-scanner"
+  ]
 }
