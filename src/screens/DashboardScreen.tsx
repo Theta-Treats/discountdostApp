@@ -5,13 +5,14 @@ import {
 } from 'react-native';
 import { 
   Appbar, Modal as PaperModal, Card, Text, Button, Avatar, IconButton, 
-  List, Caption, Badge, Divider, TextInput, Searchbar, DataTable, Portal
+  List, Caption, Badge, Divider, TextInput, Menu, Provider, Searchbar, DataTable, Portal
 } from 'react-native-paper';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Camera } from 'react-native-camera-kit';
 import { useFocusEffect } from '@react-navigation/native';
 import RazorpayCheckout from 'react-native-razorpay';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
 
 const { width, height } = Dimensions.get('window');
@@ -48,11 +49,18 @@ const DashboardScreen = ({ navigation }: any) => {
   const [showRepeatModal, setShowRepeatModal] = useState(false);
   const [repeatCount, setRepeatCount] = useState('');
   const [repeatValue, setRepeatValue] = useState('');
+  const [repeatCoupons, setRepeatCoupons] = useState<Coupon[]>([]);
 
   const [showInfoModal, setShowInfoModal] = useState(false);
   const [infoTab, setInfoTab] = useState<'gold' | 'return'>('gold'); // Tab state
 
+  const [showStartPicker, setShowStartPicker] = useState(false);
+  const [showEndPicker, setShowEndPicker] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
+
   const baseUrl = 'https://api.discountdost.com/api';
+  const DEAL_IMAGE_BASE_URL = 'https://discountdost-deals.s3.ap-south-1.amazonaws.com/deals';
+
 
   // --- 2. DATA LOADING (HYBRID FETCHING) ---
   const loadData = useCallback(async () => {
@@ -63,13 +71,15 @@ const DashboardScreen = ({ navigation }: any) => {
 
       const config = { headers: { Authorization: `Bearer ${token}` } };
 
-      const [profRes, sumRes, transRes, dealsRes, settRes, corpRes, validationRes] = await Promise.all([
+      const [profRes, sumRes, transRes, pendingDealsRes, approvedDealsRes, settRes, repeatRes, corpRes, validationRes] = await Promise.all([
         axios.get(`${baseUrl}/merchant/profile`, config).catch(() => null),
         axios.get(`${baseUrl}/merchant/dashboard-summary?merchantId=${merchantId}`, config).catch(() => null),
         axios.get(`${baseUrl}/merchant/recent-gold-transactions?merchantId=${merchantId}`, config).catch(() => null),
-        axios.get(`${baseUrl}/merchant/my-deals?merchantId=${merchantId}`, config).catch(() => null),
+        axios.get(`${baseUrl}/merchant/approved-deals?merchantId=${merchantId}`, config).catch(() => null),
+        axios.get(`${baseUrl}/merchant/pending-deals?merchantId=${merchantId}`, config).catch(() => null),
         axios.get(`${baseUrl}/merchant/my-settlements?merchantId=${merchantId}`, config).catch(() => null),
-        axios.get(`${baseUrl}/merchant/get-corporate-coupons`, config).catch(() => null),
+        axios.get(`${baseUrl}/merchant/get-corporate-coupons?merchantId=${merchantId}`, config).catch(() => null),
+        axios.get(`${baseUrl}/merchant/get-coupons?merchantId=${merchantId}&type=repeat`, config).catch(() => null),
         axios.get(`${baseUrl}/merchant/validate-coupons?merchantId=${merchantId}`, config).catch(() => null)
       ]);
 
@@ -79,11 +89,9 @@ const DashboardScreen = ({ navigation }: any) => {
       if (settRes?.data) setSettlements(settRes.data);
       if (corpRes?.data) setCorporateCoupons(corpRes.data);
       if (validationRes?.data) setIssuedCoupons(validationRes.data);
-      
-      if (dealsRes?.data) {
-        setPendingDeals(dealsRes.data.filter((d: any) => d.status === 'Pending'));
-        setApprovedDeals(dealsRes.data.filter((d: any) => d.status === 'Approved'));
-      }
+      if (repeatRes?.data) setRepeatCoupons(repeatRes.data);     
+      if (pendingDealsRes?.data) setPendingDeals(pendingDealsRes.data);
+      if (approvedDealsRes?.data) setApprovedDeals(approvedDealsRes.data);
     } catch (error) {
       console.error("Critical Load Error:", error);
     } finally {
@@ -315,21 +323,35 @@ const DashboardScreen = ({ navigation }: any) => {
   const [endDate, setEndDate] = useState(today);
 
   // 2. Add the Filter Logic (Memoized for performance)
-  const filteredCorporateCoupons = useMemo(() => {
-    return corporateCoupons.filter(coupon => {
-      // Ensure we handle date parsing safely
-      const rawDate = new Date(coupon.createdAt);
-      if (isNaN(rawDate.getTime())) return false; 
+  const combinedFilteredVouchers = useMemo(() => {
+    // Combine both sources to match the Website table
+    const allVouchers = [...corporateCoupons, ...repeatCoupons];
 
+    return allVouchers.filter(coupon => {
+      // 1. Date Formatting
+      const rawDate = new Date(coupon.createdAt);
+      if (isNaN(rawDate.getTime())) return false;
       const couponDate = rawDate.toISOString().split('T')[0];
-      const matchesDate = couponDate >= startDate && couponDate <= endDate;
       
-      // Website Sync: 'Redeemed / Sent' is the actual status string used in the DB
-      const matchesStatus = statusFilter === '' || coupon.status === statusFilter;
+      // 2. Date Filtering
+      const matchesStartDate = !startDate || couponDate >= startDate;
+      const matchesEndDate = !endDate || couponDate <= endDate;
       
-      return matchesDate && matchesStatus;
+      // 3. Status Filtering (Website Sync)
+      // Repeat Coupons use 'created' while Corporate uses 'Unused'
+      let matchesStatus = true;
+      if (statusFilter === 'Unused') {
+        matchesStatus = (coupon.status === 'Unused' || coupon.status === 'created');
+      } else if (statusFilter === 'Redeemed / Sent') {
+        matchesStatus = (coupon.status === 'Redeemed / Sent' || (coupon.status !== 'created' && coupon.status !== 'Unused'));
+      } else {
+        // 'All Status' matches everything
+        matchesStatus = true;
+      }
+
+      return matchesStartDate && matchesEndDate && matchesStatus;
     });
-  }, [corporateCoupons, startDate, endDate, statusFilter]);
+  }, [corporateCoupons, repeatCoupons, startDate, endDate, statusFilter]);
 
   // 3. Helper to reset filters
   const clearFilters = () => {
@@ -936,35 +958,68 @@ const DashboardScreen = ({ navigation }: any) => {
             {/* FILTER SECTION */}
             <View style={styles.gv_filterContainer}>
               <View style={styles.gv_row}>
-                <TextInput
-                  mode="outlined"
-                  label="From"
-                  value={startDate}
-                  style={styles.gv_dateInput}
-                  dense
-                  onChangeText={setStartDate} // Note: Use a DatePicker component here for better UX later
-                />
-                <TextInput
-                  mode="outlined"
-                  label="To"
-                  value={endDate}
-                  style={styles.gv_dateInput}
-                  dense
-                  onChangeText={setEndDate}
-                />
+                {/* FROM DATE */}
+                <TouchableOpacity 
+                  style={styles.dateBox} 
+                  onPress={() => setShowStartPicker(true)}
+                >
+                  <Text style={styles.gv_dateText}>From: {startDate || "YYYY-MM-DD"}</Text>
+                </TouchableOpacity>
+
+                {/* TO DATE */}
+                <TouchableOpacity 
+                  style={styles.dateBox} 
+                  onPress={() => setShowEndPicker(true)}
+                >
+                  <Text style={styles.gv_dateText}>To: {endDate || "YYYY-MM-DD"}</Text>
+                </TouchableOpacity>
               </View>
-              <View style={[styles.gv_row, {marginTop: 8}]}>
-                <View style={styles.gv_pickerWrapper}>
-                  <Button 
-                    mode="outlined" 
-                    onPress={() => setStatusFilter(statusFilter === 'Unused' ? 'Redeemed / Sent' : statusFilter === 'Redeemed / Sent' ? '' : 'Unused')}
-                    style={styles.gv_statusToggle}
-                    labelStyle={{fontSize: 11}}
-                  >
-                    {statusFilter || "All Status"}
-                  </Button>
-                </View>
+
+              <View style={{ marginTop: 12 }}>
+                <Menu
+                  visible={menuVisible}
+                  onDismiss={() => setMenuVisible(false)}
+                  anchor={
+                    <Button 
+                      mode="outlined" 
+                      onPress={() => setMenuVisible(true)}
+                      icon="chevron-down"
+                      contentStyle={{ flexDirection: 'row-reverse' }}
+                      style={{ borderColor: '#ccc' }}
+                    >
+                      {statusFilter || "All Status"}
+                    </Button>
+                  }
+                >
+                  <Menu.Item onPress={() => {setStatusFilter(''); setMenuVisible(false)}} title="All Status" />
+                  <Divider />
+                  <Menu.Item onPress={() => {setStatusFilter('Unused'); setMenuVisible(false)}} title="Unused" />
+                  <Menu.Item onPress={() => {setStatusFilter('Redeemed / Sent'); setMenuVisible(false)}} title="Redeemed / Sent" />
+                </Menu>
               </View>
+
+              {/* Native Android/iOS Date Pickers */}
+              {showStartPicker && (
+                <DateTimePicker
+                  value={startDate ? new Date(startDate) : new Date()}
+                  mode="date"
+                  onChange={(event, date) => {
+                    setShowStartPicker(false);
+                    if (date) setStartDate(date.toISOString().split('T')[0]);
+                  }}
+                />
+              )}
+
+              {showEndPicker && (
+                <DateTimePicker
+                  value={endDate ? new Date(endDate) : new Date()}
+                  mode="date"
+                  onChange={(event, date) => {
+                    setShowEndPicker(false);
+                    if (date) setEndDate(date.toISOString().split('T')[0]);
+                  }}
+                />
+              )}
             </View>
 
             <ScrollView horizontal={true} showsHorizontalScrollIndicator={true}>
@@ -981,7 +1036,7 @@ const DashboardScreen = ({ navigation }: any) => {
 
                 <View style={{ maxHeight: 400 }}>
                   <ScrollView nestedScrollEnabled={true}>
-                    {filteredCorporateCoupons.length > 0 ? filteredCorporateCoupons.map((coupon, index) => {
+                    {combinedFilteredVouchers.length > 0 ? combinedFilteredVouchers.map((coupon, index) => {
                       const displayValue = coupon.subtotal || coupon.value || 0;
                       const displayType = coupon.type ? coupon.type.charAt(0).toUpperCase() + coupon.type.slice(1) : 'Upsell';
 
@@ -1247,7 +1302,11 @@ const DashboardScreen = ({ navigation }: any) => {
               {pendingDeals.map((deal) => (
                 <Card key={deal._id} style={styles.ua_dealCard}>
                   <Card.Cover 
-                    source={{ uri: deal.images?.[0] || 'https://via.placeholder.com/150' }} 
+                    source={{ 
+                      uri: deal.images?.[0]?.startsWith('http') 
+                        ? deal.images[0] 
+                        : `${DEAL_IMAGE_BASE_URL}${deal.images?.[0]}` 
+                    }} 
                     style={styles.ua_dealImage} 
                   />
                   
@@ -1285,7 +1344,14 @@ const DashboardScreen = ({ navigation }: any) => {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 5 }}>
               {approvedDeals.map((deal) => (
                 <Card key={deal._id} style={styles.ad_dealCard}>
-                  <Card.Cover source={{ uri: deal.images?.[0] || 'https://via.placeholder.com/150' }} style={styles.ad_dealImage} />
+                  <Card.Cover 
+                    source={{ 
+                      uri: deal.images?.[0]?.startsWith('http') 
+                        ? deal.images[0] 
+                        : `${DEAL_IMAGE_BASE_URL}${deal.images?.[0]}` 
+                    }} 
+                    style={styles.ad_dealImage} 
+                  />
                   <Card.Content style={styles.ad_cardContent}>
                     <Text style={styles.ad_dealTitle} numberOfLines={1}>{deal.title}</Text>
                     
@@ -2213,6 +2279,30 @@ const styles = StyleSheet.create({
   gv_actionBtn: { paddingVertical: 6, paddingHorizontal: 8, borderRadius: 4, justifyContent: 'center', alignItems: 'center', minWidth: 60 },
   gv_actionBtnText: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
   gv_emptyText: { color: '#999', fontSize: 13, textAlign: 'center' },
+  datePickerBox: {
+    borderWidth: 1, 
+    borderColor: '#ccc', 
+    borderRadius: 5, 
+    backgroundColor: '#fff', 
+    height: 45, 
+    justifyContent: 'center', 
+    paddingHorizontal: 10
+  },
+  gv_dateText: {
+    color: '#333',
+    fontSize: 13,
+  },
+  dateBox: {
+    flex: 1,
+    marginHorizontal: 5,
+    height: 45,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 6,
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    backgroundColor: '#fff'
+  },
   
   /* --- COUPON VALIDATION PREFIXED STYLES --- */
   cv_card: { margin: 10, borderRadius: 12, backgroundColor: '#fff', elevation: 4 },
