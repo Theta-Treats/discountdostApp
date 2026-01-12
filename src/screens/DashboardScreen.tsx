@@ -71,7 +71,7 @@ const DashboardScreen = ({ navigation }: any) => {
 
       const config = { headers: { Authorization: `Bearer ${token}` } };
 
-      const [profRes, sumRes, transRes, pendingDealsRes, approvedDealsRes, settRes, repeatRes, corpRes, validationRes] = await Promise.all([
+      const [profRes, sumRes, transRes, approvedDealsRes, pendingDealsRes, settRes, repeatRes, corpRes, validationRes] = await Promise.all([
         axios.get(`${baseUrl}/merchant/profile`, config).catch(() => null),
         axios.get(`${baseUrl}/merchant/dashboard-summary?merchantId=${merchantId}`, config).catch(() => null),
         axios.get(`${baseUrl}/merchant/recent-gold-transactions?merchantId=${merchantId}`, config).catch(() => null),
@@ -89,9 +89,9 @@ const DashboardScreen = ({ navigation }: any) => {
       if (settRes?.data) setSettlements(settRes.data);
       if (corpRes?.data) setCorporateCoupons(corpRes.data);
       if (validationRes?.data) setIssuedCoupons(validationRes.data);
-      if (repeatRes?.data) setRepeatCoupons(repeatRes.data);     
+      if (repeatRes?.data) setRepeatCoupons(repeatRes.data);
+      if (approvedDealsRes?.data) setApprovedDeals(approvedDealsRes.data);     
       if (pendingDealsRes?.data) setPendingDeals(pendingDealsRes.data);
-      if (approvedDealsRes?.data) setApprovedDeals(approvedDealsRes.data);
     } catch (error) {
       console.error("Critical Load Error:", error);
     } finally {
@@ -609,7 +609,7 @@ const DashboardScreen = ({ navigation }: any) => {
         // 2. Add to Pending (Website Sync Logic)
         setPendingDeals(prev => [
           ...prev, 
-          { ...selectedDeal, ...editForm, status: 'Pending' } as any
+          { ...selectedDeal, ...editForm, isApproved: false }
         ]);
 
         setSelectedDeal(null);
@@ -631,15 +631,20 @@ const DashboardScreen = ({ navigation }: any) => {
     // Real apps filter the list or navigate to a search results page here
   };
 
-  // Derive filtered deals based on the search query
-  const filteredPending = pendingDeals.filter(deal => 
-    deal.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    deal.description.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Optimized Filtering Logic
+  const filteredPending = useMemo(() => {
+    return pendingDeals.filter(deal => 
+      deal.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      deal.description.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [pendingDeals, searchQuery]);
 
-  const filteredApproved = approvedDeals.filter(deal => 
-    deal.title.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredApproved = useMemo(() => {
+    return approvedDeals.filter(deal => 
+      deal.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      deal.description.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [approvedDeals, searchQuery]);
 
   // Repeat Business Fee Logic: (Total + Platform Fee % + 9% CGST + 9% SGST)
   // Printing/Shipping: ₹600 per 100 cards
@@ -809,12 +814,15 @@ const DashboardScreen = ({ navigation }: any) => {
           onChangeText={handleSearch}
           value={searchQuery}
           style={styles.headerSearchbar}
+          // This icon is the "Back" arrow inside the search bar
+          icon="arrow-left" 
           onIconPress={() => {
             setIsSearching(false);
-            setSearchQuery(''); // Clear search when closing
+            setSearchQuery('');
           }}
+          // Clear button (the 'X') logic
+          onClearIconPress={() => setSearchQuery('')}
           autoFocus
-          icon="arrow-left"
         />
         ) : (
           <View style={styles.logoContainer}>
@@ -1289,9 +1297,9 @@ const DashboardScreen = ({ navigation }: any) => {
         <View style={styles.ua_section}>
           <Text style={styles.ua_sectionTitle}>Deals Under Approval</Text>
           
-          {pendingDeals.length === 0 ? (
+          {filteredPending.length === 0 ? (
             <Text style={styles.ua_emptyText}>
-              No deals are under approval.
+              {searchQuery ? "No pending deals match your search." : "No deals are under approval."}
             </Text>
           ) : (
             <ScrollView 
@@ -1299,7 +1307,7 @@ const DashboardScreen = ({ navigation }: any) => {
               showsHorizontalScrollIndicator={false} 
               contentContainerStyle={{ paddingBottom: 10 }}
             >
-              {pendingDeals.map((deal) => (
+              {filteredPending.map((deal) => (
                 <Card key={deal._id} style={styles.ua_dealCard}>
                   <Card.Cover 
                     source={{ 
@@ -1336,13 +1344,15 @@ const DashboardScreen = ({ navigation }: any) => {
         {/* APPROVED DEALS SECTION */}
         <View style={styles.ad_section}>
           <Text style={styles.ad_sectionTitle}>Approved Deals</Text>
-          {approvedDeals.length === 0 ? (
+          {filteredApproved.length === 0 ? (
             <View style={styles.ad_emptyBox}>
-              <Text style={styles.ad_emptyText}>No approved deals yet.</Text>
+              <Text style={styles.ad_emptyText}>
+                {searchQuery ? "No deals match your search." : "No approved deals yet."}
+              </Text>
             </View>
           ) : (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 5 }}>
-              {approvedDeals.map((deal) => (
+              {filteredApproved.map((deal) => (
                 <Card key={deal._id} style={styles.ad_dealCard}>
                   <Card.Cover 
                     source={{ 

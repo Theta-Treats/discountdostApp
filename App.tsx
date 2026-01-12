@@ -1,7 +1,8 @@
 import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { Provider as PaperProvider } from 'react-native-paper';
+import { Provider as PaperProvider, MD3LightTheme } from 'react-native-paper';
+import { Text, TextInput } from 'react-native';
 
 import LoginScreen from './src/screens/LoginScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
@@ -11,11 +12,36 @@ import ForgotPasswordScreen from './src/screens/ForgotPasswordScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
 import ScannerScreen from './src/screens/ScannerScreen';
 
+// Force font scale to 1.0 (ignores system "Large Text" settings)
+if ((Text as any).defaultProps) {
+  (Text as any).defaultProps.allowFontScaling = false;
+} else {
+  (Text as any).defaultProps = { allowFontScaling: false };
+}
+
+if ((TextInput as any).defaultProps) {
+  (TextInput as any).defaultProps.allowFontScaling = false;
+} else {
+  (TextInput as any).defaultProps = { allowFontScaling: false };
+}
+
 const Stack = createNativeStackNavigator();
+
+const theme = {
+  ...MD3LightTheme,
+  colors: {
+    ...MD3LightTheme.colors,
+    primary: '#FAA307', // Your PRIMARY_COLOR
+    secondary: '#FFFFFF',
+    background: '#F0F2F5', // Your container background
+    surface: '#FFFFFF',
+    outline: '#E0E0E0',
+  },
+};
 
 export default function App() {
   return (
-    <PaperProvider>
+    <PaperProvider theme={theme}>
       <NavigationContainer>
         <Stack.Navigator 
           initialRouteName="Login" 
