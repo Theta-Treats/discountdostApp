@@ -51,24 +51,39 @@ const LoginScreen = ({ navigation }: any) => {
         return;
       }
 
-      // Updated path to match your backend: /api/merchant/auth/google
       const res = await axios.post(`${API_BASE}/merchant/auth/google`, {
         token: idToken,
       });
 
       if (res.data.success) {
         setLoading(false);
-        console.log("Google Login Success! Merchant ID:", res.data.merchant.merchantId);
-        await AsyncStorage.setItem('merchantToken', res.data.token);
-        await AsyncStorage.setItem('merchantId', String(res.data.merchant.merchantId));
         
-        // Navigation Reset with small delay
-        setTimeout(() => {
-          navigation.reset({
-            index: 0,
-            routes: [{ name: 'Dashboard' }],
-          });
-        }, 100);
+        // 1. Extract Merchant ID safely from both possible structures
+        const mId = res.data.merchant?.merchantId || res.data.merchantId;
+        const token = res.data.token;
+
+        if (!mId || !token) {
+           Alert.alert("Error", "Server returned incomplete data");
+           return;
+        }
+
+        // 2. Save Session
+        await AsyncStorage.setItem('merchantToken', token);
+        await AsyncStorage.setItem('merchantId', String(mId));
+
+        // 3. Logic for Terms Acceptance
+        if (res.data.requireTerms) {
+          // If you have a Terms screen to show first:
+          navigation.navigate('Terms', { isNewGoogleUser: true });
+        } else {
+          // Normal Dashboard redirect
+          setTimeout(() => {
+            navigation.reset({
+              index: 0,
+              routes: [{ name: 'Dashboard' }],
+            });
+          }, 100);
+        }
       }
     } catch (error: any) {
       if (error.code !== statusCodes.SIGN_IN_CANCELLED) {

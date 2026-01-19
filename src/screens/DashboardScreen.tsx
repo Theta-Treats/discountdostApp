@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { 
-  ScrollView, View, StyleSheet, ActivityIndicator, 
-  TouchableOpacity, Alert, RefreshControl, Image, Dimensions, FlatList, Modal, Linking
+  ScrollView, View, Keyboard, StyleSheet, ActivityIndicator, 
+  TouchableOpacity, Alert, RefreshControl, Image, ImageBackground, Dimensions, FlatList, Modal, Linking
 } from 'react-native';
 import { 
   Appbar, Modal as PaperModal, Card, Text, Button, Avatar, IconButton, 
@@ -13,6 +13,9 @@ import { Camera } from 'react-native-camera-kit';
 import { useFocusEffect } from '@react-navigation/native';
 import RazorpayCheckout from 'react-native-razorpay';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import FilePicker from 'react-native-file-picker';
+import RNFS from 'react-native-fs';
+import MaterialCommunityIcons from 'react-native-vector-icons/MaterialCommunityIcons';
 
 
 const { width, height } = Dimensions.get('window');
@@ -58,6 +61,28 @@ const DashboardScreen = ({ navigation }: any) => {
   const [showEndPicker, setShowEndPicker] = useState(false);
   const [menuVisible, setMenuVisible] = useState(false);
 
+  const [wallet, setWallet] = useState<{enabled: boolean, balance: number, gold_sell_enabled?: boolean} | null>(null);
+  const [showWalletOptions, setShowWalletOptions] = useState(false);
+  const [showTopupModal, setShowTopupModal] = useState(false);
+  const [showCouponInjectionModal, setShowCouponInjectionModal] = useState(false);
+  const [topupAmount, setTopupAmount] = useState('');
+
+  const [showGoldSellModal, setShowGoldSellModal] = useState(false);
+  const [showGoldOtpModal, setShowGoldOtpModal] = useState(false);
+  const [goldCustomerMobile, setGoldCustomerMobile] = useState('');
+  const [goldSellAmount, setGoldSellAmount] = useState('');
+  const [goldOtp, setGoldOtp] = useState('');
+  const [activeGoldTxId, setActiveGoldTxId] = useState('');
+  const [goldPreview, setGoldPreview] = useState<{name: string, max_amount: number} | null>(null);
+
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [showWalletActionChoice, setShowWalletActionChoice] = useState(false); // To show Topup vs Withdraw
+
+  const [couponCodesText, setCouponCodesText] = useState('');
+  const [injectionAmount, setInjectionAmount] = useState('');
+  const [selectedFileName, setSelectedFileName] = useState('No file selected');
+
   const baseUrl = 'https://api.discountdost.com/api';
   const DEAL_IMAGE_BASE_URL = 'https://discountdost-deals.s3.ap-south-1.amazonaws.com/deals';
 
@@ -71,7 +96,7 @@ const DashboardScreen = ({ navigation }: any) => {
 
       const config = { headers: { Authorization: `Bearer ${token}` } };
 
-      const [profRes, sumRes, transRes, approvedDealsRes, pendingDealsRes, settRes, repeatRes, corpRes, validationRes] = await Promise.all([
+      const [profRes, sumRes, transRes, approvedDealsRes, pendingDealsRes, settRes, repeatRes, corpRes, validationRes, walletRes] = await Promise.all([
         axios.get(`${baseUrl}/merchant/profile`, config).catch(() => null),
         axios.get(`${baseUrl}/merchant/dashboard-summary?merchantId=${merchantId}`, config).catch(() => null),
         axios.get(`${baseUrl}/merchant/recent-gold-transactions?merchantId=${merchantId}`, config).catch(() => null),
@@ -80,7 +105,8 @@ const DashboardScreen = ({ navigation }: any) => {
         axios.get(`${baseUrl}/merchant/my-settlements?merchantId=${merchantId}`, config).catch(() => null),
         axios.get(`${baseUrl}/merchant/get-corporate-coupons?merchantId=${merchantId}`, config).catch(() => null),
         axios.get(`${baseUrl}/merchant/get-coupons?merchantId=${merchantId}&type=repeat`, config).catch(() => null),
-        axios.get(`${baseUrl}/merchant/validate-coupons?merchantId=${merchantId}`, config).catch(() => null)
+        axios.get(`${baseUrl}/merchant/validate-coupons?merchantId=${merchantId}`, config).catch(() => null),
+        axios.get(`${baseUrl}/merchant/wallet?merchantId=${merchantId}`, config).catch(() => null)
       ]);
 
       if (profRes?.data) setProfile(profRes.data);
@@ -92,6 +118,7 @@ const DashboardScreen = ({ navigation }: any) => {
       if (repeatRes?.data) setRepeatCoupons(repeatRes.data);
       if (approvedDealsRes?.data) setApprovedDeals(approvedDealsRes.data);     
       if (pendingDealsRes?.data) setPendingDeals(pendingDealsRes.data);
+      if (walletRes?.data) setWallet(walletRes.data);
     } catch (error) {
       console.error("Critical Load Error:", error);
     } finally {
@@ -770,7 +797,7 @@ const DashboardScreen = ({ navigation }: any) => {
   };
 
 
-  const renderBanners = () => (
+const renderBanners = () => (
     <View style={styles.bannerWrapper}>
       <FlatList
         ref={bannerRef}
@@ -779,18 +806,342 @@ const DashboardScreen = ({ navigation }: any) => {
         pagingEnabled
         showsHorizontalScrollIndicator={false}
         keyExtractor={(_, index) => index.toString()}
+        getItemLayout={(_, index) => ({
+          length: width - 40,
+          offset: (width - 40) * index,
+          index,
+        })}
         onMomentumScrollEnd={(event) => {
-          const index = Math.floor(event.nativeEvent.contentOffset.x / (width - 40));
+          const index = Math.round(event.nativeEvent.contentOffset.x / (width - 40));
           setActiveBanner(index);
         }}
         renderItem={({ item }) => (
-          <TouchableOpacity activeOpacity={0.9}>
-            <Image source={item} style={styles.bannerImage} />
+          <TouchableOpacity 
+            activeOpacity={0.9} 
+            style={styles.bannerSlide}
+            onPress={handleImageClick} 
+          >
+            {/* Background Layer: Blurred for the 'Trust' feel */}
+            <ImageBackground
+              source={item}
+              style={StyleSheet.absoluteFill}
+              blurRadius={15}
+            >
+              <View style={styles.darkOverlay} />
+            </ImageBackground>
+
+            {/* Foreground Layer: Sharp and fully visible */}
+            <Image 
+              source={item} 
+              style={styles.mainBannerImage} 
+              resizeMode="contain" 
+            />
           </TouchableOpacity>
         )}
       />
+      
+      {/* Indicator Dots */}
+      <View style={styles.paginationDots}>
+        {bannerData.map((_, i) => (
+          <View 
+            key={i} 
+            style={[
+              styles.dot, 
+              { backgroundColor: activeBanner === i ? '#2ec4b6' : '#cbd5e1' }
+            ]} 
+          />
+        ))}
+      </View>
     </View>
   );
+
+  const handleImageClick = () => {
+    // activeBanner tells us which slide the user is on
+    if (activeBanner === 0) {
+      // Logic for first image (e.g., Create New Deal)
+      navigation.navigate('CreateDeal'); 
+    } else if (activeBanner === 1) {
+      // Logic for second image (e.g., Repeat Coupon)
+      // openRepeatCouponPopup(); 
+      Alert.alert("Action", "Repeat Coupon clicked!");
+    }
+  };
+
+  // --- Define an Interface for the Razorpay Success Data ---
+  interface RazorpaySuccessResponse {
+    razorpay_payment_id: string;
+    razorpay_order_id: string;
+    razorpay_signature: string;
+  }
+
+  const handleTopup = async (amount: number) => {
+    try {
+      const merchantId = await AsyncStorage.getItem('merchantId');
+      const token = await AsyncStorage.getItem('merchantToken');
+      if (!merchantId) return;
+
+      // 1. Create Order on Backend
+      const response = await axios.post(`${baseUrl}/merchant/wallet/create-order`, { amount });
+      const order = response.data;
+
+      const options = {
+        description: 'Wallet Top-up',
+        image: '../../assets/DDLOGO.jpg', // Use a hosted URL for Razorpay UI
+        currency: 'INR',
+        key: 'rzp_live_R97aL9Rt5X0ZtW', 
+        amount: order.amount, // This is amount * 100 from backend
+        name: 'DiscountDost',
+        order_id: order.id,
+        prefill: { 
+          email: profile?.email || '', 
+          contact: profile?.phone || '', 
+          name: profile?.name || '' 
+        },
+        theme: { color: '#2ec4b6' }
+      };
+
+      // 2. Open Razorpay
+      RazorpayCheckout.open(options).then(async (data: RazorpaySuccessResponse) => {
+        // 3. Verify Payment on Backend
+        await axios.post(`${baseUrl}/merchant/wallet/verify`, {
+          merchantId,
+          amount,
+          razorpay_payment_id: data.razorpay_payment_id, // Important for tracking
+          razorpay_order_id: data.razorpay_order_id,
+          razorpay_signature: data.razorpay_signature
+        }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+
+        Alert.alert("Success", "₹" + amount + " added to your wallet.");
+        setTopupAmount(''); // Clear input
+        loadData(); // Refresh balance
+      }).catch((error: any) => {
+        Alert.alert("Payment Cancelled", error.description || "Transaction not completed");
+        console.log("Payment Failed:", error);
+      });
+    } catch (err) {
+      console.error("Topup Error:", err);
+      Alert.alert("Error", "Could not initiate top-up");
+    }
+  };
+
+  const handleCouponInjection = async (codes: string[], amountPerCoupon: number) => {
+    if (!wallet || !profile) {
+      Alert.alert("Error", "Data not fully loaded.");
+      return;
+    }
+
+    const merchantId = await AsyncStorage.getItem('merchantId');
+    
+    // --- DYNAMIC CALCULATIONS ---
+    // Use the fee from profile, or default to 15
+    const feePercentage = profile.voucher_platform_fee || 15;
+    
+    const count = codes.length;
+    const baseAmount = count * amountPerCoupon;
+    const platformFee = Number((baseAmount * (feePercentage / 100)).toFixed(2));
+    
+    // Tax is calculated on the Platform Fee
+    const cgst = Number((platformFee * 0.09).toFixed(2));
+    const sgst = Number((platformFee * 0.09).toFixed(2));
+    const totalGst = cgst + sgst;
+    
+    const finalAmount = Number((baseAmount + platformFee + totalGst).toFixed(2));
+
+    if (wallet.balance < finalAmount) {
+      Alert.alert(
+        "Insufficient Balance", 
+        `Total required: ₹${finalAmount}\nBalance: ₹${wallet.balance}\n\nPlease top up.`
+      );
+      return;
+    }
+
+    // --- MATCH WEBSITE BREAKDOWN STYLE ---
+    const breakdownMsg = [
+      `Total Voucher Value: ₹${baseAmount.toFixed(2)}`,
+      `Platform Fee (${feePercentage}%): ₹${platformFee.toFixed(2)}`,
+      `CGST (9%): ₹${cgst.toFixed(2)}`,
+      `SGST (9%): ₹${sgst.toFixed(2)}`,
+      `--------------------------`,
+      `TOTAL PAYABLE: ₹${finalAmount.toFixed(2)}`
+    ].join('\n');
+
+    Alert.alert(
+      "Payment Breakdown",
+      breakdownMsg,
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Confirm & Pay", 
+          onPress: async () => {
+            try {
+              const res = await axios.post(`${baseUrl}/merchant/wallet/create-coupon`, {
+                merchantId,
+                couponCodes: codes,
+                amount: amountPerCoupon
+              });
+              if(res.data.success) {
+                Alert.alert("Success 🎉", "Coupons injected successfully.");
+                setCouponCodesText('');
+                setInjectionAmount('');
+                setSelectedFileName('No file selected');
+                loadData(); 
+              }
+            } catch (err: any) {
+              Alert.alert("Error", err.response?.data?.error || "Injection failed.");
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleGoldSellInitiate = async () => {
+    try {
+      const merchantId = await AsyncStorage.getItem('merchantId');
+      if (!/^\d{10}$/.test(goldCustomerMobile)) {
+        Alert.alert("Error", "Enter valid 10-digit mobile");
+        return;
+      }
+
+      const res = await axios.post(`${baseUrl}/gold/merchant/gold-exchange/initiate`, {
+        merchantId,
+        mobile: goldCustomerMobile,
+        amount: parseFloat(goldSellAmount)
+      });
+
+      if (res.data.otp_sent) {
+        setActiveGoldTxId(res.data.tx_id);
+        setShowGoldSellModal(false);
+        setShowGoldOtpModal(true);
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err.response?.data?.error || "Initiate failed");
+    }
+  };
+
+  const handleGoldOtpVerify = async () => {
+    try {
+      const res = await axios.post(`${baseUrl}/gold/merchant/gold-exchange/verify-otp`, {
+        tx_id: activeGoldTxId,
+        otp: goldOtp
+      });
+
+      Alert.alert(
+        "Gold Sold Successfully ✅",
+        `Amount Credited: ₹${res.data.sell_amount}\nGold Deducted: ${res.data.gold_grams}g`
+      );
+
+      // --- CLEANUP & REFRESH ---
+      setShowGoldOtpModal(false);
+      setGoldOtp('');
+      setGoldCustomerMobile('');
+      setGoldSellAmount('');
+      setGoldPreview(null); // Clear the preview data
+      
+      loadData(); // <--- CRITICAL: Refresh wallet balance and recent transactions
+      
+    } catch (err: any) {
+      Alert.alert("Error", err.response?.data?.error || "OTP Verification failed");
+    }
+  };
+
+  const handleFetchGoldPreview = async () => {
+    try {
+      const merchantId = await AsyncStorage.getItem('merchantId');
+      if (!/^\d{10}$/.test(goldCustomerMobile)) {
+        Alert.alert("Error", "Enter valid 10-digit mobile");
+        return;
+      }
+
+      const res = await axios.post(`${baseUrl}/gold/merchant/gold-exchange/preview`, {
+        merchantId,
+        mobile: goldCustomerMobile
+      });
+
+      setGoldPreview(res.data.customer);
+      setGoldSellAmount(res.data.customer.max_amount.toString()); // Auto-fill max amount
+      Keyboard.dismiss();
+    } catch (err: any) {
+      Alert.alert("Error", err.response?.data?.error || "Customer not found");
+    }
+  };
+
+  const handleWithdrawalRequest = async () => {
+    try {
+      const merchantId = await AsyncStorage.getItem('merchantId');
+      const amount = parseFloat(withdrawAmount);
+
+      if (!amount || amount <= 0) {
+        Alert.alert("Invalid Amount", "Please enter a valid amount to withdraw.");
+        return;
+      }
+
+      if (amount > (wallet?.balance || 0)) {
+        Alert.alert("Insufficient Balance", "You cannot withdraw more than your current balance.");
+        return;
+      }
+
+      const res = await axios.post(`${baseUrl}/merchant/wallet/withdraw`, {
+        merchantId,
+        amount
+      });
+
+      if (res.data.success) {
+        Alert.alert("Success ✅", "Withdrawal request submitted. It will be settled in your EOD payment.");
+        setShowWithdrawModal(false);
+        setWithdrawAmount('');
+        loadData(); // Refresh balance
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err.response?.data?.error || "Withdrawal failed");
+    }
+  };
+
+  const readSelectedFile = async (path: string) => {
+    try {
+      const cleanPath = path.startsWith('file://') ? path.replace('file://', '') : path;
+      const fileContent = await RNFS.readFile(cleanPath, 'utf8');
+
+      setCouponCodesText(prev => prev ? `${prev}\n${fileContent}` : fileContent);
+      setSelectedFileName(path.split('/').pop() || 'File selected');
+      
+      Alert.alert("Success", "File content imported.");
+    } catch (err) {
+      console.error("Read Error:", err);
+      Alert.alert("Error", "Could not read this file format as text.");
+    }
+  };
+
+  // 2. CALL IT HERE in handleFilePicker
+  const handleFilePicker = () => {
+    FilePicker.showFilePicker({}, (response: any) => {
+      if (response.didCancel) {
+        console.log('User cancelled');
+      } else if (response.error) {
+        Alert.alert("Error", "Picker Error: " + response.error);
+      } else {
+        // --- THIS LINE MAKES THE FUNCTION ACTIVE AGAIN ---
+        readSelectedFile(response.path); 
+      }
+    });
+  };
+
+  const [showLowWalletAlert, setShowLowWalletAlert] = useState(false);
+  const [isDismissed, setIsDismissed] = useState(false); // Track manual close
+
+  useEffect(() => {
+    if (wallet && wallet.enabled) {
+      // Show only if balance is low AND they haven't clicked 'X' yet
+      if (wallet.balance < 500 && !isDismissed) {
+        setShowLowWalletAlert(true);
+      } else if (wallet.balance >= 500) {
+        setShowLowWalletAlert(false);
+        setIsDismissed(false); // Reset dismissal if they top up
+      }
+    }
+  }, [wallet, isDismissed]);
 
   return (
     <View style={styles.container}>
@@ -809,21 +1160,21 @@ const DashboardScreen = ({ navigation }: any) => {
 
         {/* CENTER / SEARCH BAR: Dynamic Transition */}
         {isSearching ? (
-        <Searchbar
-          placeholder="Search deals..."
-          onChangeText={handleSearch}
-          value={searchQuery}
-          style={styles.headerSearchbar}
-          // This icon is the "Back" arrow inside the search bar
-          icon="arrow-left" 
-          onIconPress={() => {
-            setIsSearching(false);
-            setSearchQuery('');
-          }}
-          // Clear button (the 'X') logic
-          onClearIconPress={() => setSearchQuery('')}
-          autoFocus
-        />
+          <Searchbar
+              placeholder="Search your deals..."
+              onChangeText={handleSearch}
+              value={searchQuery}
+              style={styles.headerSearchbar}
+              inputStyle={{ minHeight: 0, paddingBottom: 5 }} // Fixes text alignment
+              icon="arrow-left" 
+              onIconPress={() => {
+                setIsSearching(false);
+                setSearchQuery('');
+              }}
+              onClearIconPress={() => setSearchQuery('')}
+              autoFocus // Keyboard pops up immediately
+              mode="bar" // Gives it a clean "material" look
+            />
         ) : (
           <View style={styles.logoContainer}>
             <Image 
@@ -863,6 +1214,36 @@ const DashboardScreen = ({ navigation }: any) => {
           </View>
         )}
       </Appbar.Header>
+
+      {showLowWalletAlert && (
+        <View style={styles.wallet_notifWrapper}>
+          <TouchableOpacity 
+            style={styles.wallet_notifBanner} 
+            onPress={() => setShowTopupModal(true)}
+            activeOpacity={0.9}
+          >
+            <View style={styles.wallet_notifIconContainer}>
+              <MaterialCommunityIcons name="wallet-warn" size={22} color="#b91c1c" />
+            </View>
+            
+            <View style={styles.wallet_notifTextContent}>
+              <Text style={styles.wallet_notifTitle}>Low Balance: ₹{wallet?.balance.toFixed(2)}</Text>
+              <Text style={styles.wallet_notifSubtitle}>Tap to top-up and keep deals active.</Text>
+            </View>
+
+            {/* Manual Dismiss Button */}
+            <TouchableOpacity 
+              style={styles.wallet_dismissBtn} 
+              onPress={(e) => {
+                setShowLowWalletAlert(false);
+                setIsDismissed(true);
+              }}
+            >
+              <MaterialCommunityIcons name="close" size={18} color="#94a3b8" />
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </View>
+      )}
 
       <ScrollView
         ref={scrollRef} 
@@ -921,7 +1302,20 @@ const DashboardScreen = ({ navigation }: any) => {
         {/* DASHBOARD HUB ACTIONS */}
         <View style={styles.actionHub}>
           <Text style={styles.hubTitle}>Merchant Hub</Text>
-          <View style={styles.hubGrid}>
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false} 
+            contentContainerStyle={{ paddingRight: 20 }}
+          >
+            <View style={{ flexDirection: 'row', justifyContent: 'space-around' }}>
+            {wallet?.enabled && (
+            <HubItem 
+              icon="wallet-outline" 
+              label="My Wallet" 
+              color="#2ec4b6" 
+              onPress={() => setShowWalletOptions(true)} 
+            />
+            )}
             <HubItem 
               icon="plus-box" 
               label="Create Deal" 
@@ -947,6 +1341,7 @@ const DashboardScreen = ({ navigation }: any) => {
               onPress={() => setShowInfoModal(true)} 
             />
           </View>
+          </ScrollView>
         </View>
 
         {/* GOLD VOUCHERS REDEEM SECTION */}
@@ -1298,9 +1693,12 @@ const DashboardScreen = ({ navigation }: any) => {
           <Text style={styles.ua_sectionTitle}>Deals Under Approval</Text>
           
           {filteredPending.length === 0 ? (
+            <View style={styles.emptySearchContainer}>
+             <IconButton icon="magnify-remove" size={40} iconColor="#ccc" />
             <Text style={styles.ua_emptyText}>
               {searchQuery ? "No pending deals match your search." : "No deals are under approval."}
             </Text>
+            </View>
           ) : (
             <ScrollView 
               horizontal 
@@ -1827,6 +2225,313 @@ const DashboardScreen = ({ navigation }: any) => {
             </Button>
           </PaperModal>
         </Portal>
+        {/* Wallet Modal */}
+        <Modal visible={showWalletOptions} transparent animationType="slide">
+          <TouchableOpacity 
+            style={styles.wallet_modalOverlay} 
+            onPress={() => setShowWalletOptions(false)} 
+          />
+          <View style={styles.wallet_bottomSheet}>
+            <Text style={styles.wallet_modalTitle}>My Wallet</Text>
+            
+            <TouchableOpacity 
+              style={styles.wallet_optionButton} 
+              onPress={() => { 
+                setShowWalletOptions(false); 
+                setShowWalletActionChoice(true); // <--- OPEN CHOICE MODAL
+              }}
+            >
+              <MaterialCommunityIcons name="cash-multiple" size={24} color="#2ec4b6" />
+              <View style={{marginLeft: 15}}>
+                <Text style={styles.wallet_optionText}>Wallet Balance</Text>
+                <Text style={styles.wallet_optionSubtext}>Balance: ₹{wallet?.balance?.toFixed(2) || '0.00'}</Text>
+              </View>
+            </TouchableOpacity>
+
+            {/* CHANGE: Check profile instead of wallet */}
+            {profile?.gold_sell_enabled && (
+              <TouchableOpacity 
+                style={styles.wallet_optionButton} 
+                onPress={() => { setShowWalletOptions(false); setShowGoldSellModal(true); }}
+              >
+                <MaterialCommunityIcons name="gold" size={24} color="#FAA307" />
+                <View style={{marginLeft: 15}}>
+                  <Text style={styles.wallet_optionText}>Gold Exchange (Sell Gold)</Text>
+                  <Text style={styles.wallet_optionSubtext}>Sell customer gold for cash/goods</Text>
+                </View>
+              </TouchableOpacity>
+            )}
+
+            <TouchableOpacity 
+              style={styles.wallet_optionButton} 
+              onPress={() => { setShowWalletOptions(false); setShowCouponInjectionModal(true); }}
+            >
+              <MaterialCommunityIcons name="ticket-confirmation-outline" size={24} color="#6c5ce7" />
+              <View style={{marginLeft: 15}}>
+                <Text style={styles.wallet_optionText}>Coupon Code Injection</Text>
+                <Text style={styles.wallet_optionSubtext}>Inject external coupons via wallet</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </Modal>
+        {/* Wallet Action Choice (Topup vs Withdraw) */}
+        <Modal visible={showWalletActionChoice} transparent animationType="fade">
+          <View style={styles.wallet_modalOverlay}>
+            <View style={[styles.wallet_bottomSheet, { minHeight: 200 }]}>
+              <Text style={styles.wallet_modalTitle}>Manage Balance</Text>
+              
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 10 }}>
+                <TouchableOpacity 
+                  style={[styles.wallet_proceedBtn, { flex: 1, backgroundColor: '#2ec4b6' }]}
+                  onPress={() => { setShowWalletActionChoice(false); setShowTopupModal(true); }}
+                >
+                  <Text style={styles.wallet_proceedBtnText}>💰 Top-up</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={[styles.wallet_proceedBtn, { flex: 1, backgroundColor: '#3498db' }]}
+                  onPress={() => { setShowWalletActionChoice(false); setShowWithdrawModal(true); }}
+                >
+                  <Text style={styles.wallet_proceedBtnText}>🏦 Withdraw</Text>
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity onPress={() => setShowWalletActionChoice(false)} style={{ marginTop: 20, alignItems: 'center' }}>
+                <Text style={{ color: '#64748b' }}>Close</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Withdraw Entry Modal */}
+        <Modal visible={showWithdrawModal} transparent animationType="slide">
+          <View style={styles.wallet_modalOverlay}>
+            <View style={styles.wallet_bottomSheet}>
+              <Text style={styles.wallet_modalTitle}>Withdraw to Bank</Text>
+              <Text style={{ textAlign: 'center', color: '#64748b', marginBottom: 10 }}>
+                Available: ₹{wallet?.balance?.toFixed(2)}
+              </Text>
+              
+              <Text style={styles.wallet_inputLabel}>Amount to Withdraw (₹)</Text>
+              <TextInput
+                style={styles.wallet_amountInput}
+                placeholder="e.g. 500"
+                keyboardType="numeric"
+                value={withdrawAmount}
+                onChangeText={setWithdrawAmount}
+              />
+
+              <TouchableOpacity style={[styles.wallet_proceedBtn, { backgroundColor: '#3498db' }]} onPress={handleWithdrawalRequest}>
+                <Text style={styles.wallet_proceedBtnText}>Request Withdrawal</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity onPress={() => setShowWithdrawModal(false)} style={{ marginTop: 15, alignItems: 'center' }}>
+                <Text style={{ color: '#ef4444' }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+        {/* Top-up Amount Entry Modal */}
+        <Modal visible={showTopupModal} transparent animationType="fade">
+          <View style={styles.wallet_modalOverlay}>
+            <View style={styles.wallet_bottomSheet}>
+              <Text style={styles.wallet_modalTitle}>Top-up Wallet</Text>
+              
+              <Text style={styles.wallet_inputLabel}>Enter Amount (₹)</Text>
+              <TextInput
+                style={styles.wallet_amountInput}
+                placeholder="e.g. 500"
+                keyboardType="numeric"
+                value={topupAmount}
+                onChangeText={setTopupAmount}
+              />
+
+              <TouchableOpacity 
+                style={styles.wallet_proceedBtn}
+                onPress={() => {
+                  const amt = parseFloat(topupAmount);
+                  if (amt > 0) {
+                    setShowTopupModal(false);
+                    handleTopup(amt); // Now it's not invisible!
+                  } else {
+                    Alert.alert("Invalid Amount", "Please enter a valid number");
+                  }
+                }}
+              >
+                <Text style={styles.wallet_proceedBtnText}>Proceed to Pay</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={{ marginTop: 15, alignItems: 'center' }}
+                onPress={() => setShowTopupModal(false)}
+              >
+                <Text style={{ color: '#ef4444' }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+        {/* Injection Modal */}
+        <Modal visible={showCouponInjectionModal} transparent animationType="slide">
+          <View style={styles.wallet_modalOverlay}>
+            <View style={[styles.wallet_bottomSheet, { minHeight: 500 }]}>
+              <Text style={styles.wallet_modalTitle}>Coupon Injection</Text>
+
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <Text style={styles.wallet_inputLabel}>Coupon Codes (comma separated)</Text>
+                <TextInput
+                  style={styles.wallet_textArea}
+                  multiline
+                  placeholder="ENTER CODES HERE..."
+                  value={couponCodesText}
+                  onChangeText={setCouponCodesText}
+                />
+
+                <TouchableOpacity 
+                  style={styles.wallet_filePickerBtn} 
+                  onPress={handleFilePicker} // <--- Added here
+                >
+                  <MaterialCommunityIcons name="file-upload-outline" size={20} color="#64748b" />
+                  <Text style={{ marginLeft: 8, color: '#64748b', fontWeight: '600' }}>
+                    Import Coupon File
+                  </Text>
+                </TouchableOpacity>
+
+                <Text style={styles.wallet_fileName}>{selectedFileName}</Text>
+
+                <Text style={styles.wallet_inputLabel}>Amount per Coupon (₹)</Text>
+                <TextInput
+                  style={styles.wallet_amountInput}
+                  placeholder="Enter Amount"
+                  keyboardType="numeric"
+                  value={injectionAmount}
+                  onChangeText={setInjectionAmount}
+                />
+
+                <TouchableOpacity 
+                  style={styles.wallet_proceedBtn}
+                  onPress={() => {
+                    const codes = couponCodesText.split(/[\n,]+/).map(c => c.trim()).filter(Boolean);
+                    const amt = parseFloat(injectionAmount);
+                    
+                    if (codes.length > 0 && amt > 0) {
+                      setShowCouponInjectionModal(false);
+                      handleCouponInjection(codes, amt); // Triggering the logic
+                    } else {
+                      Alert.alert("Missing Info", "Enter codes and amount");
+                    }
+                  }}
+                >
+                  <Text style={styles.wallet_proceedBtnText}>Proceed to Breakdown</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={{ marginVertical: 15, alignItems: 'center' }}
+                  onPress={() => setShowCouponInjectionModal(false)}
+                >
+                  <Text style={{ color: '#ef4444' }}>Close</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+        {/* Gold Sell Modal */}
+        <Modal visible={showGoldSellModal} transparent animationType="fade">
+          <View style={styles.wallet_modalOverlay}>
+            <View style={styles.wallet_bottomSheet}>
+              <Text style={styles.wallet_modalTitle}>Gold Exchange</Text>
+              
+              <Text style={styles.wallet_inputLabel}>Customer Mobile</Text>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <TextInput
+                  style={[styles.wallet_amountInput, { flex: 1 }]}
+                  placeholder="10-digit mobile"
+                  keyboardType="phone-pad"
+                  value={goldCustomerMobile}
+                  onChangeText={setGoldCustomerMobile}
+                />
+                <TouchableOpacity 
+                  style={[styles.wallet_proceedBtn, { marginTop: 0, paddingHorizontal: 15 }]} 
+                  onPress={handleFetchGoldPreview}
+                >
+                  <Text style={styles.wallet_proceedBtnText}>Fetch</Text>
+                </TouchableOpacity>
+              </View>
+
+              {goldPreview && (
+                <View style={{ backgroundColor: '#fff7ed', padding: 15, borderRadius: 10, marginVertical: 15 }}>
+                  <Text style={{ fontWeight: 'bold' }}>Customer: {goldPreview.name}</Text>
+                  <Text>Max Exchangeable: ₹{goldPreview.max_amount}</Text>
+                </View>
+              )}
+
+              <Text style={styles.wallet_inputLabel}>Exchange Amount (₹)</Text>
+              <TextInput
+                style={styles.wallet_amountInput}
+                placeholder="Enter amount"
+                keyboardType="numeric"
+                value={goldSellAmount}
+                onChangeText={(val) => {
+                  // Prevent entering more than max_amount
+                  if (goldPreview && parseFloat(val) > goldPreview.max_amount) return;
+                  setGoldSellAmount(val);
+                }}
+              />
+
+              <TouchableOpacity 
+                style={[styles.wallet_proceedBtn, { backgroundColor: goldPreview ? '#2ec4b6' : '#cbd5e1' }]} 
+                onPress={handleGoldSellInitiate}
+                disabled={!goldPreview}
+              >
+                <Text style={styles.wallet_proceedBtnText}>Send OTP to Customer</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={{ marginTop: 15, alignItems: 'center' }}
+                onPress={() => setShowGoldSellModal(false)}
+              >
+                <Text style={{ color: '#ef4444' }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+        {/* Gold OTP Modal */}
+        <Modal visible={showGoldOtpModal} transparent animationType="slide">
+          <View style={styles.wallet_modalOverlay}>
+            <View style={styles.wallet_bottomSheet}>
+              <Text style={styles.wallet_modalTitle}>Verify Transaction</Text>
+              <Text style={{ textAlign: 'center', color: '#64748b', marginBottom: 20 }}>
+                A 6-digit OTP has been sent to customer +91 {goldCustomerMobile}
+              </Text>
+
+              <Text style={styles.wallet_inputLabel}>Enter OTP</Text>
+              <TextInput
+                style={[styles.wallet_amountInput, { letterSpacing: 5, textAlign: 'center', fontSize: 24 }]}
+                placeholder="000000"
+                keyboardType="number-pad"
+                maxLength={6}
+                value={goldOtp}
+                onChangeText={setGoldOtp}
+              />
+
+              <TouchableOpacity 
+                style={[styles.wallet_proceedBtn, { backgroundColor: '#FAA307' }]} 
+                onPress={handleGoldOtpVerify}
+              >
+                <Text style={styles.wallet_proceedBtnText}>Confirm & Sell Gold</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={{ marginTop: 15, alignItems: 'center' }}
+                onPress={() => {
+                    setShowGoldOtpModal(false);
+                    setGoldOtp('');
+                }}
+              >
+                <Text style={{ color: '#ef4444' }}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
         {/* EDIT DEAL MODAL */}
         <Portal>
           <PaperModal 
@@ -1929,11 +2634,18 @@ const styles = StyleSheet.create({
   },
   headerSearchbar: {
     flex: 1,
-    height: 40,
-    backgroundColor: '#F0F2F5',
-    elevation: 0, // Makes it flat and modern
-    borderRadius: 8,
-    marginRight: 10,
+    height: 45, // Standard professional height
+    backgroundColor: '#F5F7FA',
+    borderRadius: 12,
+    elevation: 0, // No shadow for "flat" modern look
+    borderWidth: 1,
+    borderColor: '#E1E8ED',
+  },
+  emptySearchContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+    width: width - 40, // Keeps it centered
   },
   notifBadge: {
     position: 'absolute',
@@ -2017,17 +2729,48 @@ const styles = StyleSheet.create({
   },
   bannerWrapper: {
     marginTop: 20,
-    height: 150, // Fixed height for the container
+    height: 200, // Increased height slightly to match a modern banner feel
     width: width - 40,
-    borderRadius: 15,
+    borderRadius: 16,
     overflow: 'hidden',
-    backgroundColor: '#FFF', // Background color if image doesn't fill
+    alignSelf: 'center',
+    backgroundColor: '#000', // Base fallback
+    elevation: 5, // Android shadow
+    shadowColor: '#000', // iOS shadow
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 10,
   },
-  bannerImage: {
-    width: width - 40, 
-    height: 150,
-    borderRadius: 15,
-    resizeMode: 'stretch', // This ensures the full image is forced into the box
+  bannerSlide: {
+    width: width - 40,
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  darkOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.3)', // Adjust for brightness(0.7)
+  },
+  mainBannerImage: {
+    width: '100%',
+    height: '100%',
+    zIndex: 2,
+  },
+  paginationDots: {
+    flexDirection: 'row',
+    position: 'absolute',
+    bottom: 12,
+    right: 15, // Aligned to right like your indicator
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginHorizontal: 3,
   },
   tableRowHeader: { 
     flexDirection: 'row', 
@@ -2471,6 +3214,157 @@ const styles = StyleSheet.create({
     marginTop: 20,
     borderRadius: 15,
     overflow: 'hidden',
+  },
+  // --- WALLET & MODAL STYLES ---
+  wallet_modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  wallet_bottomSheet: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 25,
+    borderTopRightRadius: 25,
+    padding: 24,
+    minHeight: 300,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -3 },
+    shadowOpacity: 0.1,
+    shadowRadius: 5,
+    elevation: 20,
+  },
+  wallet_modalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#1e293b',
+    marginBottom: 20,
+    textAlign: 'center',
+    letterSpacing: 0.5,
+  },
+  wallet_optionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 18,
+    borderRadius: 16,
+    backgroundColor: '#f8fafc',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#f1f5f9',
+  },
+  wallet_optionText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  wallet_optionSubtext: {
+    fontSize: 13,
+    color: '#64748b',
+    marginTop: 2,
+  },
+  
+  // --- COUPON INJECTION SPECIFIC ---
+  wallet_inputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#475569',
+    marginBottom: 8,
+    marginTop: 15,
+  },
+  wallet_textArea: {
+    backgroundColor: '#f1f5f9',
+    borderRadius: 12,
+    padding: 12,
+    height: 100,
+    textAlignVertical: 'top',
+    fontSize: 15,
+    color: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  wallet_filePickerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 15,
+    borderRadius: 12,
+    borderStyle: 'dashed',
+    borderWidth: 2,
+    borderColor: '#cbd5e1',
+    backgroundColor: '#f8fafc',
+    marginVertical: 10,
+  },
+  wallet_fileName: {
+    fontSize: 12,
+    color: '#64748b',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  wallet_amountInput: {
+    backgroundColor: '#f1f5f9',
+    borderRadius: 12,
+    padding: 12,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  wallet_proceedBtn: {
+    backgroundColor: '#4361ee',
+    padding: 16,
+    borderRadius: 12,
+    alignItems: 'center',
+    marginTop: 25,
+  },
+  wallet_proceedBtnText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  wallet_notifWrapper: {
+    paddingHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  wallet_notifBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#fee2e2',
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+  },
+  wallet_notifIconContainer: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: '#fef2f2',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  wallet_notifTextContent: {
+    flex: 1,
+  },
+  wallet_notifTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#991b1b', // Darker red for text
+  },
+  wallet_notifSubtitle: {
+    fontSize: 11,
+    color: '#7f8c8d',
+    marginTop: 1,
+  },
+  wallet_dismissBtn: {
+    padding: 4,
+    marginLeft: 8,
   },
   bottomNav: { 
     position: 'absolute', 
