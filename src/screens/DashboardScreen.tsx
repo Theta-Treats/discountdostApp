@@ -54,6 +54,10 @@ const DashboardScreen = ({ navigation }: any) => {
   const [repeatValue, setRepeatValue] = useState('');
   const [repeatCoupons, setRepeatCoupons] = useState<Coupon[]>([]);
 
+  // Inside DashboardScreen component
+  const [scannedCouponDetails, setScannedCouponDetails] = useState<any>(null);
+  const [showValidateButton, setShowValidateButton] = useState(false);
+
   const [showInfoModal, setShowInfoModal] = useState(false);
   const [infoTab, setInfoTab] = useState<'gold' | 'return'>('gold'); // Tab state
 
@@ -73,7 +77,13 @@ const DashboardScreen = ({ navigation }: any) => {
   const [goldSellAmount, setGoldSellAmount] = useState('');
   const [goldOtp, setGoldOtp] = useState('');
   const [activeGoldTxId, setActiveGoldTxId] = useState('');
-  const [goldPreview, setGoldPreview] = useState<{name: string, max_amount: number} | null>(null);
+  const [goldPreview, setGoldPreview] = useState<{
+    name: string; 
+    max_amount: number; 
+    sellable_grams: number; // Added this line
+  } | null>(null);
+  const [goldRates, setGoldRates] = useState<{buy: any, sell: any} | null>(null);
+  const [isInitiating, setIsInitiating] = useState(false);
 
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [withdrawAmount, setWithdrawAmount] = useState('');
@@ -82,6 +92,14 @@ const DashboardScreen = ({ navigation }: any) => {
   const [couponCodesText, setCouponCodesText] = useState('');
   const [injectionAmount, setInjectionAmount] = useState('');
   const [selectedFileName, setSelectedFileName] = useState('No file selected');
+
+  const [showTransactionsModal, setShowTransactionsModal] = useState(false);
+  const [walletTransactions, setWalletTransactions] = useState<WalletTransaction[]>([]);
+  const [isTxLoading, setIsTxLoading] = useState(false);
+
+  const [showCorporateGiftModal, setShowCorporateGiftModal] = useState(false);
+  const [staffDataText, setStaffDataText] = useState("");
+  const [corpAmount, setCorpAmount] = useState("");
 
   const baseUrl = 'https://api.discountdost.com/api';
   const DEAL_IMAGE_BASE_URL = 'https://discountdost-deals.s3.ap-south-1.amazonaws.com/deals';
@@ -451,9 +469,15 @@ const DashboardScreen = ({ navigation }: any) => {
 
               if (res.status === 200) {
                 Alert.alert("Success", "Voucher redeemed and SMS sent!");
-                setCorporateCoupons(prev => prev.map(c => 
+                
+                // Update BOTH lists to ensure UI refreshes regardless of type
+                const updater = (prev: any[]) => prev.map(c => 
                   c._id === coupon._id ? { ...c, status: 'Redeemed / Sent' } : c
-                ));
+                );
+                
+                setCorporateCoupons(updater);
+                setRepeatCoupons(updater);
+                
                 setRedeemModal({ visible: false, coupon: null, phone: '', txn: '' });
               }
             } catch (err: any) {
@@ -468,10 +492,13 @@ const DashboardScreen = ({ navigation }: any) => {
   const handleRefund = (couponId: string, gateway: string, value: number) => {
     Alert.alert(
       "Refund Voucher?",
-      `Refund ₹${value}?\n\nRazorpay: Auto-refund (5-7 days)\nOther: Manual settle.`,
+      `You are refunding voucher worth ₹${value}\n\nThis action cannot be undone.`,
       [
         { text: "Cancel", style: "cancel" },
-        { text: "Yes, Refund", style: "destructive", onPress: async () => {
+        { 
+          text: "Yes, Refund", 
+          style: "destructive", 
+          onPress: async () => {
             try {
               const token = await AsyncStorage.getItem('merchantToken');
               const merchantId = await AsyncStorage.getItem('merchantId');
@@ -481,15 +508,21 @@ const DashboardScreen = ({ navigation }: any) => {
               }, { headers: { Authorization: `Bearer ${token}` } });
 
               if (res.status === 200) {
-                // Website Sync: Show success message with mode
-                const mode = res.data.mode === "razorpay" ? "via Razorpay" : "Manually";
-                Alert.alert("Refund Initiated ✅", `Refund will be processed ${mode}.`);
+                const { mode, refundable } = res.data;
                 
-                // Remove from list
+                // SYNC WITH WEB MESSAGING
+                const successMsg = mode === "razorpay" 
+                  ? "Refund will be processed automatically via Razorpay (5–7 working days)."
+                  : `Refund will be settled manually. Amount: ₹${refundable}`;
+
+                Alert.alert("Refund Initiated ✅", successMsg);
+                
+                // SYNC WITH WEB: Remove from both lists (Corporate and Repeat)
                 setCorporateCoupons(prev => prev.filter(c => c._id !== couponId));
+                setRepeatCoupons(prev => prev.filter(c => c._id !== couponId));
               }
-            } catch (err) { 
-              Alert.alert("Error", "Refund failed"); 
+            } catch (err: any) { 
+              Alert.alert("Error", err.response?.data?.error || "Refund failed"); 
             }
           }
         }
@@ -537,22 +570,51 @@ const DashboardScreen = ({ navigation }: any) => {
   const [otpModal, setOtpModal] = useState({ visible: false, otp: '', couponCode: '' });
 
   const handleValidateRequest = async (code: string) => {
+    if (!code) return Alert.alert("Error", "Please enter a coupon code");
+    
+    try {
+      const token = await AsyncStorage.getItem('merchantToken');
+      const merchantId = await AsyncStorage.getItem('merchantId');
+      
+      // Website Sync: Fetch coupon details first
+      const res = await axios.get(`${baseUrl}/valicoupons?couponCode=${code}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (res.data) {
+        setScannedCouponDetails(res.data);
+        
+        // Check if this coupon belongs to this merchant (Logic from Website)
+        if (res.data.merchantId === merchantId) {
+          setShowValidateButton(true);
+        } else {
+          setShowValidateButton(false);
+          Alert.alert("Unauthorized", "This coupon does not belong to your store.");
+        }
+      }
+    } catch (err: any) {
+      setShowValidateButton(false);
+      setScannedCouponDetails(null);
+      Alert.alert("Invalid Coupon", "Coupon not found or already used.");
+    }
+  };
+
+  // This function now handles the actual OTP trigger
+  const triggerOTPFlow = async () => {
     try {
       const merchantId = await AsyncStorage.getItem('merchantId');
       const token = await AsyncStorage.getItem('merchantToken');
       
-      // 1. Send OTP
       const res = await axios.post(`${baseUrl}/merchant/send-coupon-otp`, 
-        { couponCode: code, merchantId },
+        { couponCode: scannedCouponDetails.couponCode || manualCode, merchantId },
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
       if (res.status === 200) {
-        setOtpModal({ visible: true, otp: '', couponCode: code });
-        setIsScanning(false);
+        setOtpModal({ visible: true, otp: '', couponCode: scannedCouponDetails.couponCode || manualCode });
       }
     } catch (err: any) {
-      Alert.alert("Error", err.response?.data?.error || "Invalid Coupon");
+      Alert.alert("Error", "Failed to send OTP");
     }
   };
 
@@ -566,8 +628,10 @@ const DashboardScreen = ({ navigation }: any) => {
 
       if (res.status === 200) {
         setOtpModal({ visible: false, otp: '', couponCode: '' });
+        setScannedCouponDetails(null); // Clear the pre-validation info
+        setShowValidateButton(false);
         Alert.alert("Success", "Coupon validated successfully!");
-        loadData(); // This refreshes the IssuedCoupons table automatically
+        loadData(); // Refresh the list
       }
     } catch (err: any) {
       Alert.alert("Error", err.response?.data?.error || "OTP Verification failed");
@@ -748,54 +812,6 @@ const DashboardScreen = ({ navigation }: any) => {
       <Text style={[styles.rowValue, { flex: 1, textAlign: 'right' }]}>{qty || 0}</Text>
     </View>
   );
-
-  // --- 4. COUPON VALIDATION & REDEMPTION (TWO-STEP OTP) ---
-
-  const handleValidateCoupon = async (code: string) => {
-    if(!code) return;
-    try {
-      const token = await AsyncStorage.getItem('merchantToken');
-      const merchantId = await AsyncStorage.getItem('merchantId');
-      
-      // Step 1: Initialize Validation (OTP Generation)
-      const res = await axios.post(`${baseUrl}/merchant/send-coupon-otp`, 
-        { couponCode: code, merchantId },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-
-      if (res.status === 200) {
-        Alert.prompt(
-          "Customer OTP Required",
-          `Verification code sent to the customer for code: ${code}. Ask the customer for the 6-digit OTP.`,
-          [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Confirm Redemption",
-              onPress: async (otp?: string) => {
-                if (!otp || otp.length < 4) return;
-                try {
-                  // Step 2: Verify OTP and Execute Transaction
-                  await axios.post(`${baseUrl}/merchant/verify-coupon-otp`, 
-                    { couponCode: code, otp: otp, verifiedBy: 'MerchantApp' },
-                    { headers: { Authorization: `Bearer ${token}` } }
-                  );
-                  Alert.alert("Success ✅", "Coupon validated. Payment will be settled in the next cycle.");
-                  setManualCode('');
-                  loadData();
-                } catch (err: any) {
-                  Alert.alert("Validation Failed", "The OTP entered is incorrect or expired.");
-                }
-              }
-            }
-          ],
-          'plain-text'
-        );
-      }
-    } catch (error: any) {
-      Alert.alert("Invalid Coupon", error.response?.data?.error || "This coupon is either expired or not assigned to your store.");
-    }
-  };
-
 
 const renderBanners = () => (
     <View style={styles.bannerWrapper}>
@@ -997,18 +1013,124 @@ const renderBanners = () => (
     );
   };
 
-  const handleGoldSellInitiate = async () => {
+  const handleCorporateGiftSubmission = async () => {
+    const lines = staffDataText.split("\n").map(l => l.trim()).filter(Boolean);
+    const amount = parseFloat(corpAmount);
+
+    if (lines.length === 0 || !amount) {
+      Alert.alert("Error", "Please enter staff details and amount");
+      return;
+    }
+
+    const nameArr: string[] = [];
+    const phoneArr: string[] = [];
+    const bdayArr: string[] = [];
+    const today = new Date().toISOString().split("T")[0];
+
+    for (let line of lines) {
+      const parts = line.split(",").map(p => p.trim());
+      if (parts.length < 2) {
+        Alert.alert("Invalid Format", `Line: "${line}" must have Name and Phone.`);
+        return;
+      }
+      if (!/^\d{10}$/.test(parts[1])) {
+        Alert.alert("Invalid Phone", `Check phone number: ${parts[1]}`);
+        return;
+      }
+      nameArr.push(parts[0]);
+      phoneArr.push(parts[1]);
+      bdayArr.push(parts[2] || today);
+    }
+
+    // --- CALCULATIONS ---
+    const count = nameArr.length;
+    const baseAmount = count * amount;
+    const platformFee = +(baseAmount * 0.15).toFixed(2);
+    const gst = +(platformFee * 0.18).toFixed(2);
+    const finalAmount = +(baseAmount + platformFee + gst).toFixed(2);
+
+    // --- CONFIRMATION BREAKDOWN ---
+    Alert.alert(
+      "Payment Breakdown",
+      `Vouchers: ${count} x ₹${amount}\n` +
+      `Total Value: ₹${baseAmount.toFixed(2)}\n` +
+      `Platform Fee (15%): ₹${platformFee.toFixed(2)}\n` +
+      `CGST (9%): ₹${(gst / 2).toFixed(2)}\n` +
+      `SGST (9%): ₹${(gst / 2).toFixed(2)}\n\n` +
+      `Total Payable: ₹${finalAmount.toFixed(2)}`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Proceed", 
+          onPress: () => submitCorporateVouchers(nameArr, phoneArr, bdayArr, amount) 
+        }
+      ]
+    );
+  };
+
+  // Added explicit types for the parameters to satisfy TypeScript
+  const submitCorporateVouchers = async (
+    nameArr: string[], 
+    phoneArr: string[], 
+    bdayArr: string[], 
+    amount: number
+  ) => {
     try {
       const merchantId = await AsyncStorage.getItem('merchantId');
-      if (!/^\d{10}$/.test(goldCustomerMobile)) {
-        Alert.alert("Error", "Enter valid 10-digit mobile");
+      const res = await axios.post(`${baseUrl}/merchant/corporate-gift/create`, {
+        merchantId, 
+        nameArr, 
+        phoneArr, 
+        bdayArr, 
+        amount
+      });
+
+      if (res.data.success) {
+        Alert.alert("Success 🎉", "Corporate vouchers scheduled!");
+        setShowCorporateGiftModal(false);
+        setStaffDataText(""); // Clear input after success
+        setCorpAmount("");    // Clear input after success
+        loadData(); 
+      }
+    } catch (error: any) {
+      Alert.alert("Error", error.response?.data?.error || "Transaction failed");
+    }
+  };
+
+
+  const handleGoldSellInitiate = async () => {
+    try {
+      const amount = parseFloat(goldSellAmount);
+      const safeMax = Math.floor(goldPreview?.max_amount || 0);
+
+      // 1. Logic Validation (Sync with Web)
+      if (amount <= 0 || isNaN(amount)) {
+        Alert.alert("Error", "Please enter a valid amount");
         return;
       }
 
+      if (amount > safeMax) {
+        Alert.alert("Limit Exceeded", `You can only exchange up to ₹${safeMax}`);
+        return;
+      }
+
+      // 2. Mobile Normalization (Takes last 10 digits only)
+      const cleanMobile = goldCustomerMobile.replace(/\D/g, '').slice(-10);
+      if (cleanMobile.length !== 10) {
+        Alert.alert("Error", "Enter a valid 10-digit mobile number");
+        return;
+      }
+
+      setIsInitiating(true); // Start Loader
+      const merchantId = await AsyncStorage.getItem('merchantId');
+      const token = await AsyncStorage.getItem('merchantToken');
+
       const res = await axios.post(`${baseUrl}/gold/merchant/gold-exchange/initiate`, {
         merchantId,
-        mobile: goldCustomerMobile,
-        amount: parseFloat(goldSellAmount)
+        mobile: cleanMobile,
+        amount: amount
+      }, {
+        headers: { Authorization: `Bearer ${token}` }
       });
 
       if (res.data.otp_sent) {
@@ -1017,7 +1139,10 @@ const renderBanners = () => (
         setShowGoldOtpModal(true);
       }
     } catch (err: any) {
-      Alert.alert("Error", err.response?.data?.error || "Initiate failed");
+      // Backend returns specific errors like "Entered amount is too close to limit"
+      Alert.alert("Gold Exchange", err.response?.data?.error || "Initiate failed");
+    } finally {
+      setIsInitiating(false); // Stop Loader
     }
   };
 
@@ -1028,9 +1153,12 @@ const renderBanners = () => (
         otp: goldOtp
       });
 
+      // SYNC WITH WEB: Add handover instruction
       Alert.alert(
         "Gold Sold Successfully ✅",
-        `Amount Credited: ₹${res.data.sell_amount}\nGold Deducted: ${res.data.gold_grams}g`
+        `Amount Credited: ₹${res.data.sell_amount}\n` +
+        `Gold Deducted: ${res.data.gold_grams}g\n\n` +
+        `📢 IMPORTANT: Please hand over the physical gold to the customer now.`
       );
 
       // --- CLEANUP & REFRESH ---
@@ -1038,9 +1166,10 @@ const renderBanners = () => (
       setGoldOtp('');
       setGoldCustomerMobile('');
       setGoldSellAmount('');
-      setGoldPreview(null); // Clear the preview data
+      setGoldPreview(null); 
+      setGoldRates(null); // Clear the calculated rate
       
-      loadData(); // <--- CRITICAL: Refresh wallet balance and recent transactions
+      loadData(); // Refresh wallet and transactions
       
     } catch (err: any) {
       Alert.alert("Error", err.response?.data?.error || "OTP Verification failed");
@@ -1050,19 +1179,33 @@ const renderBanners = () => (
   const handleFetchGoldPreview = async () => {
     try {
       const merchantId = await AsyncStorage.getItem('merchantId');
-      if (!/^\d{10}$/.test(goldCustomerMobile)) {
-        Alert.alert("Error", "Enter valid 10-digit mobile");
-        return;
+      const token = await AsyncStorage.getItem('merchantToken');
+      
+      // Normalize mobile for the request
+      const cleanMobile = goldCustomerMobile.replace(/\D/g, '').slice(-10);
+
+      const res = await axios.post(`${baseUrl}/gold/merchant/gold-exchange/preview`, 
+        { merchantId, mobile: cleanMobile },
+        { headers: { Authorization: `Bearer ${token}` }}
+      );
+
+      const customer = res.data.customer;
+      setGoldPreview(customer);
+
+      // Calculate Rate: (Value / Grams)
+      // Example: ₹5000 / 0.7845g = ₹6373.48/g
+      if (customer.sellable_grams > 0) {
+        const calculatedRate = customer.max_amount / customer.sellable_grams;
+        setGoldRates({
+          buy: { price_per_gram: 'N/A' }, // Buy rate isn't available in this endpoint
+          sell: { price_per_gram: calculatedRate.toFixed(2) }
+        });
       }
 
-      const res = await axios.post(`${baseUrl}/gold/merchant/gold-exchange/preview`, {
-        merchantId,
-        mobile: goldCustomerMobile
-      });
-
-      setGoldPreview(res.data.customer);
-      setGoldSellAmount(res.data.customer.max_amount.toString()); // Auto-fill max amount
+      // Set the input to the Max Floor value (Sync with MerchantDashboard.js)
+      setGoldSellAmount(Math.floor(customer.max_amount).toString());
       Keyboard.dismiss();
+
     } catch (err: any) {
       Alert.alert("Error", err.response?.data?.error || "Customer not found");
     }
@@ -1099,18 +1242,54 @@ const renderBanners = () => (
     }
   };
 
+  interface WalletTransaction {
+    created_at: string;
+    type?: string;           // 'topup' or 'gold_exchange'
+    paid_amount?: number;    // Topup only
+    razorpay_fee?: number;   // Topup only
+    gst?: number;            // Topup only
+    credited_amount?: number;// Topup only
+    sell_amount?: number;    // Gold only
+    gold_grams?: number;     // Gold only
+    amount?: number;         // Fallback/Generic
+  }
+
+  const fetchWalletTransactions = async () => {
+    try {
+      setIsTxLoading(true);
+      const token = await AsyncStorage.getItem('merchantToken');
+      const merchantId = await AsyncStorage.getItem('merchantId');
+      
+      const res = await axios.get(`${baseUrl}/merchant/wallet/transactions?merchantId=${merchantId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      setWalletTransactions(res.data || []);
+      setShowTransactionsModal(true);
+    } catch (error) {
+      Alert.alert("Error", "Could not fetch transactions.");
+    } finally {
+      setIsTxLoading(false);
+    }
+  };
+
   const readSelectedFile = async (path: string) => {
     try {
       const cleanPath = path.startsWith('file://') ? path.replace('file://', '') : path;
       const fileContent = await RNFS.readFile(cleanPath, 'utf8');
 
-      setCouponCodesText(prev => prev ? `${prev}\n${fileContent}` : fileContent);
-      setSelectedFileName(path.split('/').pop() || 'File selected');
+      if (showCorporateGiftModal) {
+        // If the Corporate Modal is open, put text in staff box
+        setStaffDataText(prev => prev ? `${prev}\n${fileContent}` : fileContent);
+      } else {
+        // Otherwise, put it in the Coupon box
+        setCouponCodesText(prev => prev ? `${prev}\n${fileContent}` : fileContent);
+      }
       
+      setSelectedFileName(path.split('/').pop() || 'File selected');
       Alert.alert("Success", "File content imported.");
     } catch (err) {
-      console.error("Read Error:", err);
-      Alert.alert("Error", "Could not read this file format as text.");
+      Alert.alert("Error", "Could not read this file.");
     }
   };
 
@@ -1458,12 +1637,16 @@ const renderBanners = () => (
                             ₹{displayValue.toFixed(2)}
                           </Text>
 
+                          {/* Status Badge Update */}
                           <View style={{ width: 110, paddingHorizontal: 5 }}>
                             <View style={[styles.gv_statusBadge, { 
-                              backgroundColor: coupon.status === 'Unused' ? '#fff3cd' : '#d1ecf1',
+                              backgroundColor: (coupon.status === 'Redeemed' || coupon.status === 'Gold Added') ? '#d1ecf1' : 
+                                              coupon.status === 'Sent' ? '#e2e3e5' : '#fff3cd',
                             }]}>
-                              <Text style={{ fontSize: 9, fontWeight: 'bold', color: coupon.status === 'Unused' ? '#856404' : '#0c5460' }}>
-                                {coupon.status === 'Unused' ? 'UNUSED' : 'REDEEMED'}
+                              <Text style={{ fontSize: 9, fontWeight: 'bold', color: (coupon.status === 'Redeemed' || coupon.status === 'Gold Added') ? '#0c5460' : 
+                                              coupon.status === 'Sent' ? '#383d41' : '#856404' }}>
+                                {((coupon.status === 'Redeemed' || coupon.status === 'Gold Added')) ? 'REDEEMED' : 
+                                  coupon.status === 'Sent' ? 'SENT' : 'UNUSED'}
                               </Text>
                             </View>
                           </View>
@@ -1471,28 +1654,42 @@ const renderBanners = () => (
                           <Text style={[styles.gv_cell, { width: 90, color: '#666', fontSize: 11 }]}>{displayType}</Text>
 
                           <View style={{ width: 160, flexDirection: 'row', paddingLeft: 5 }}>
-                            {coupon.status === 'Unused' ? (
-                              <>
-                                <TouchableOpacity 
-                                  style={[styles.gv_actionBtn, { backgroundColor: '#28a745' }]} 
-                                  onPress={() => setRedeemModal({ ...redeemModal, visible: true, coupon })}
-                                >
-                                  <Text style={styles.gv_actionBtnText}>Redeem</Text>
-                                </TouchableOpacity>
-                                <TouchableOpacity 
-                                  style={[styles.gv_actionBtn, { backgroundColor: '#d9534f', marginLeft: 5 }]} 
-                                  onPress={() => handleRefund(coupon._id, coupon.gateway || 'manual', displayValue)}
-                                >
-                                  <Text style={styles.gv_actionBtnText}>Refund</Text>
-                                </TouchableOpacity>
-                              </>
-                            ) : (
+                            {/* If Online or Corporate: Only show View Details */}
+                            {(coupon.type === 'online' || coupon.type === 'corporate') ? (
                               <TouchableOpacity 
                                 style={[styles.gv_actionBtn, { backgroundColor: '#3498db', width: 120 }]} 
-                                onPress={() => setViewCouponData(coupon)}
+                                onPress={() => setViewCouponData(coupon)} // You should trigger a Modal similar to the SweetAlert on web
                               >
                                 <Text style={styles.gv_actionBtnText}>View Details &gt;</Text>
                               </TouchableOpacity>
+                            ) : (
+                              /* Standard flow for Offline/Upsell */
+                              coupon.status === 'Unused' ? (
+                                <>
+                                  <TouchableOpacity 
+                                    style={[styles.gv_actionBtn, { backgroundColor: wallet?.enabled ? '#ff5c5c' : '#28a745' }]} 
+                                    onPress={() => setRedeemModal({ ...redeemModal, visible: true, coupon })}
+                                  >
+                                    <Text style={styles.gv_actionBtnText}>Redeem</Text>
+                                  </TouchableOpacity>
+                                  
+                                  {!wallet?.enabled && (
+                                    <TouchableOpacity 
+                                      style={[styles.gv_actionBtn, { backgroundColor: '#d9534f', marginLeft: 5 }]} 
+                                      onPress={() => handleRefund(coupon._id, coupon.gateway || 'manual', displayValue)}
+                                    >
+                                      <Text style={styles.gv_actionBtnText}>Refund</Text>
+                                    </TouchableOpacity>
+                                  )}
+                                </>
+                              ) : (
+                                <TouchableOpacity 
+                                  style={[styles.gv_actionBtn, { backgroundColor: '#3498db', width: 120 }]} 
+                                  onPress={() => setViewCouponData(coupon)}
+                                >
+                                  <Text style={styles.gv_actionBtnText}>View Details &gt;</Text>
+                                </TouchableOpacity>
+                              )
                             )}
                           </View>
                         </View>
@@ -1545,12 +1742,29 @@ const renderBanners = () => (
                         </Text>
 
                         <View style={{ width: 100, padding: 8 }}>
-                          <View style={[
-                            styles.statusBadge, 
-                            { backgroundColor: tx.type === "Repeat" ? "#6c5ce7" : "#fb8500" }
-                          ]}>
-                            <Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>{tx.type}</Text>
-                          </View>
+                          {(() => {
+                            // Normalize type for comparison
+                            const txType = tx.type?.toLowerCase() || 'upsell';
+                            
+                            // Define colors matching your web dashboard theme
+                            const getBadgeColor = () => {
+                              switch(txType) {
+                                case 'repeat': return '#6c5ce7';    // Purple
+                                case 'upsell': return '#fb8500';    // Orange
+                                case 'online': return '#00b894';    // Green/Teal
+                                case 'corporate': return '#0984e3'; // Blue
+                                default: return '#fb8500';
+                              }
+                            };
+
+                            return (
+                              <View style={[styles.statusBadge, { backgroundColor: getBadgeColor() }]}>
+                                <Text style={{ color: '#fff', fontSize: 10, fontWeight: 'bold' }}>
+                                  {txType.charAt(0).toUpperCase() + txType.slice(1)}
+                                </Text>
+                              </View>
+                            );
+                          })()}
                         </View>
 
                         <Text style={[styles.cell, { width: 100, fontWeight: 'bold' }]}>₹{tx.finalAmount?.toFixed(2)}</Text>
@@ -1603,18 +1817,37 @@ const renderBanners = () => (
                 placeholder="Enter Coupon Code"
                 value={manualCode}
                 onChangeText={setManualCode}
-                outlineColor="#ddd"
                 activeOutlineColor="#eb8934"
               />
               <Button 
                 mode="contained" 
                 onPress={() => handleValidateRequest(manualCode)} 
                 buttonColor="#eb8934"
-                style={{ height: 48, justifyContent: 'center' }}
               >
-                Send
+                Check
               </Button>
             </View>
+
+            {/* WEBSITE SYNC: Conditional Validate Button and Info */}
+            {scannedCouponDetails && (
+              <View style={{ padding: 15, backgroundColor: '#fdf2f2', borderRadius: 8, margin: 10 }}>
+                <Text style={{ fontWeight: 'bold' }}>Deal: {scannedCouponDetails.dealTitle}</Text>
+                <Text>Customer: {scannedCouponDetails.customerName}</Text>
+                
+                {showValidateButton ? (
+                  <Button 
+                    mode="contained" 
+                    onPress={triggerOTPFlow} 
+                    buttonColor="#28a745"
+                    style={{ marginTop: 10 }}
+                  >
+                    Validate Coupon (Send OTP)
+                  </Button>
+                ) : (
+                  <Text style={{ color: 'red', marginTop: 5 }}>Not valid for your store</Text>
+                )}
+              </View>
+            )}
 
             <Button 
               icon="qrcode-scan" 
@@ -2182,20 +2415,48 @@ const renderBanners = () => (
             onDismiss={() => setViewCouponData(null)} 
             contentContainerStyle={styles.modalContent}
           >
-            <Text style={styles.modalHeader}>Redeemed Details</Text>
+            <Text style={styles.modalHeader}>
+              {viewCouponData?.type === 'corporate' ? "Corporate Gift Voucher" : "Voucher Details"}
+            </Text>
+            
             {viewCouponData && (
-              <View style={{ gap: 8 }}>
-                <Text><Text style={{fontWeight: 'bold'}}>Code:</Text> {getCouponId(viewCouponData._id)}</Text>
-                <Text><Text style={{fontWeight: 'bold'}}>Customer:</Text> {viewCouponData.customerPhone || 'N/A'}</Text>
-                <Text><Text style={{fontWeight: 'bold'}}>Txn ID:</Text> {viewCouponData.merchantTransactionId || 'N/A'}</Text>
-                <Text><Text style={{fontWeight: 'bold'}}>Value:</Text> ₹{viewCouponData.subtotal || viewCouponData.value}</Text>
+              <View style={{ gap: 10, backgroundColor: '#f8fafc', padding: 12, borderRadius: 8 }}>
                 <Text>
-                  <Text style={{fontWeight: 'bold'}}>Redeemed At:</Text> {
-                    viewCouponData.redeemedAt 
-                      ? new Date(viewCouponData.redeemedAt).toLocaleString('en-IN') 
-                      : 'Not yet redeemed'
-                  }
+                  <Text style={{fontWeight: 'bold'}}>Status: </Text>
+                  <Text style={{ color: (viewCouponData.status === 'Redeemed' || viewCouponData.status === 'Gold Added') ? '#16a34a' : '#f59e0b' }}>
+                    {(viewCouponData.status === 'Redeemed' || viewCouponData.status === 'Gold Added') ? 'Redeemed' : 'Unused'}
+                  </Text>
                 </Text>
+
+                <Text><Text style={{fontWeight: 'bold'}}>Voucher Type: </Text> 
+                  {viewCouponData.type === 'online' ? 'Online (Injected)' : 
+                  viewCouponData.type === 'corporate' ? 'Corporate Gift' : 'Standard'}
+                </Text>
+
+                <Text><Text style={{fontWeight: 'bold'}}>Voucher Value: </Text> ₹{viewCouponData.subtotal || viewCouponData.value}</Text>
+
+                <Divider style={{ marginVertical: 8 }} />
+
+                {/* MATCHING THE WEB DESCRIPTIONS */}
+                {viewCouponData.type === 'online' && (
+                  <Text style={{ fontSize: 13, color: '#475569', fontStyle: 'italic' }}>
+                    This voucher was created using Voucher Code Injection. It can be redeemed by the customer when applied in their gold dashboard.
+                  </Text>
+                )}
+
+                {viewCouponData.type === 'corporate' && (
+                  <Text style={{ fontSize: 13, color: '#475569', fontStyle: 'italic' }}>
+                    This voucher was created as part of a Corporate Gift campaign. It will be redeemed when the recipient uses it in their gold dashboard.
+                  </Text>
+                )}
+
+                {/* DEFAULT VIEW FOR REDEEMED OFFERS */}
+                {!(viewCouponData.type === 'online' || viewCouponData.type === 'corporate') && (
+                  <View>
+                    <Text><Text style={{fontWeight: 'bold'}}>Customer:</Text> {viewCouponData.customerPhone || 'N/A'}</Text>
+                    <Text><Text style={{fontWeight: 'bold'}}>Txn ID:</Text> {viewCouponData.merchantTransactionId || 'N/A'}</Text>
+                  </View>
+                )}
               </View>
             )}
             <Button mode="contained" onPress={() => setViewCouponData(null)} style={{marginTop: 20}}>Close</Button>
@@ -2268,8 +2529,20 @@ const renderBanners = () => (
             >
               <MaterialCommunityIcons name="ticket-confirmation-outline" size={24} color="#6c5ce7" />
               <View style={{marginLeft: 15}}>
-                <Text style={styles.wallet_optionText}>Coupon Code Injection</Text>
-                <Text style={styles.wallet_optionSubtext}>Inject external coupons via wallet</Text>
+                <Text style={styles.wallet_optionText}>Voucher Code Injection</Text>
+                <Text style={styles.wallet_optionSubtext}>Inject external vouchers via wallet</Text>
+              </View>
+            </TouchableOpacity>
+
+            {/* Corporate Gift Vouchers Option */}
+            <TouchableOpacity 
+              style={styles.wallet_optionButton} 
+              onPress={() => { setShowWalletOptions(false); setShowCorporateGiftModal(true); }}
+            >
+              <MaterialCommunityIcons name="gift-outline" size={24} color="#eb4d4b" />
+              <View style={{marginLeft: 15}}>
+                <Text style={styles.wallet_optionText}>Corporate Gift Vouchers</Text>
+                <Text style={styles.wallet_optionSubtext}>Send gift vouchers to your staff</Text>
               </View>
             </TouchableOpacity>
           </View>
@@ -2277,28 +2550,48 @@ const renderBanners = () => (
         {/* Wallet Action Choice (Topup vs Withdraw) */}
         <Modal visible={showWalletActionChoice} transparent animationType="fade">
           <View style={styles.wallet_modalOverlay}>
-            <View style={[styles.wallet_bottomSheet, { minHeight: 200 }]}>
-              <Text style={styles.wallet_modalTitle}>Manage Balance</Text>
-              
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 10 }}>
-                <TouchableOpacity 
-                  style={[styles.wallet_proceedBtn, { flex: 1, backgroundColor: '#2ec4b6' }]}
-                  onPress={() => { setShowWalletActionChoice(false); setShowTopupModal(true); }}
-                >
-                  <Text style={styles.wallet_proceedBtnText}>💰 Top-up</Text>
+            <View style={[styles.wallet_bottomSheet, { minHeight: 250 }]}>
+              {/* Header with Back Button */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 20 }}>
+                <TouchableOpacity onPress={() => { setShowWalletActionChoice(false); setShowWalletOptions(true); }}>
+                  <MaterialCommunityIcons name="arrow-left" size={24} color="#001233" />
                 </TouchableOpacity>
+                <Text style={[styles.wallet_modalTitle, { marginBottom: 0, marginLeft: 10 }]}>Manage Balance</Text>
+              </View>
+              
+              <View style={{ gap: 10 }}>
+                {/* ROW 1: Top-up and Withdraw */}
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <TouchableOpacity 
+                    style={[styles.wallet_proceedBtn, { flex: 1, backgroundColor: '#2ec4b6' }]}
+                    onPress={() => { setShowWalletActionChoice(false); setShowTopupModal(true); }}
+                  >
+                    <Text style={styles.wallet_proceedBtnText}>💰 Top-up</Text>
+                  </TouchableOpacity>
 
+                  <TouchableOpacity 
+                    style={[styles.wallet_proceedBtn, { flex: 1, backgroundColor: '#3498db' }]}
+                    onPress={() => { setShowWalletActionChoice(false); setShowWithdrawModal(true); }}
+                  >
+                    <Text style={styles.wallet_proceedBtnText}>🏦 Withdraw</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* ROW 2: View Transactions (Full Width) */}
                 <TouchableOpacity 
-                  style={[styles.wallet_proceedBtn, { flex: 1, backgroundColor: '#3498db' }]}
-                  onPress={() => { setShowWalletActionChoice(false); setShowWithdrawModal(true); }}
+                  style={[styles.wallet_proceedBtn, { backgroundColor: '#9b59b6' }]}
+                  onPress={() => { 
+                    setShowWalletActionChoice(false); 
+                    fetchWalletTransactions(); 
+                  }}
                 >
-                  <Text style={styles.wallet_proceedBtnText}>🏦 Withdraw</Text>
+                  {isTxLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.wallet_proceedBtnText}>📜 View Transactions</Text>}
                 </TouchableOpacity>
               </View>
 
-              <TouchableOpacity onPress={() => setShowWalletActionChoice(false)} style={{ marginTop: 20, alignItems: 'center' }}>
-                <Text style={{ color: '#64748b' }}>Close</Text>
-              </TouchableOpacity>
+         <TouchableOpacity onPress={() => setShowWalletActionChoice(false)} style={{ marginTop: 20, alignItems: 'center' }}>
+            <Text style={{ color: '#ef4444' }}>Close All</Text>
+          </TouchableOpacity>
             </View>
           </View>
         </Modal>
@@ -2307,7 +2600,12 @@ const renderBanners = () => (
         <Modal visible={showWithdrawModal} transparent animationType="slide">
           <View style={styles.wallet_modalOverlay}>
             <View style={styles.wallet_bottomSheet}>
-              <Text style={styles.wallet_modalTitle}>Withdraw to Bank</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 15 }}>
+                <TouchableOpacity onPress={() => { setShowWithdrawModal(false); setShowWalletActionChoice(true); }}>
+                  <MaterialCommunityIcons name="arrow-left" size={24} color="#001233" />
+                </TouchableOpacity>
+                <Text style={[styles.wallet_modalTitle, { marginBottom: 0, marginLeft: 10 }]}>Withdraw to Bank</Text>
+              </View>
               <Text style={{ textAlign: 'center', color: '#64748b', marginBottom: 10 }}>
                 Available: ₹{wallet?.balance?.toFixed(2)}
               </Text>
@@ -2335,7 +2633,12 @@ const renderBanners = () => (
         <Modal visible={showTopupModal} transparent animationType="fade">
           <View style={styles.wallet_modalOverlay}>
             <View style={styles.wallet_bottomSheet}>
-              <Text style={styles.wallet_modalTitle}>Top-up Wallet</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 15 }}>
+                <TouchableOpacity onPress={() => { setShowTopupModal(false); setShowWalletActionChoice(true); }}>
+                  <MaterialCommunityIcons name="arrow-left" size={24} color="#001233" />
+                </TouchableOpacity>
+                <Text style={[styles.wallet_modalTitle, { marginBottom: 0, marginLeft: 10 }]}>Top-up Wallet</Text>
+              </View>
               
               <Text style={styles.wallet_inputLabel}>Enter Amount (₹)</Text>
               <TextInput
@@ -2368,6 +2671,80 @@ const renderBanners = () => (
                 <Text style={{ color: '#ef4444' }}>Cancel</Text>
               </TouchableOpacity>
             </View>
+          </View>
+        </Modal>
+        {/* Transactions Modal */}
+        <Modal visible={showTransactionsModal} animationType="slide">
+          <View style={{ flex: 1, backgroundColor: '#fff', paddingTop: 50 }}>
+            <View style={{ padding: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ padding: 20, flexDirection: 'row', alignItems: 'center' }}>
+                <TouchableOpacity onPress={() => { setShowTransactionsModal(false); setShowWalletActionChoice(true); }}>
+                  <MaterialCommunityIcons name="arrow-left" size={28} color="#001233" />
+                </TouchableOpacity>
+                <Text style={{ fontSize: 20, fontWeight: 'bold', color: '#001233', marginLeft: 15 }}>Wallet Transactions</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowTransactionsModal(false)}>
+                <Text style={{ color: '#ef4444', fontWeight: 'bold' }}>Close</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView horizontal>
+              <View>
+                {/* Table Header */}
+                <View style={styles.txTableHeader}>
+                  <Text style={[styles.txHeaderText, { width: 120 }]}>Date</Text>
+                  <Text style={[styles.txHeaderText, { width: 80, textAlign: 'right' }]}>Paid</Text>
+                  <Text style={[styles.txHeaderText, { width: 70, textAlign: 'right' }]}>Fee</Text>
+                  <Text style={[styles.txHeaderText, { width: 90, textAlign: 'right' }]}>Credited</Text>
+                </View>
+
+                {/* Table Body */}
+                <FlatList
+                  data={walletTransactions}
+                  keyExtractor={(_, index) => index.toString()}
+                  renderItem={({ item }) => {
+                    const isGoldExchange = !!item.sell_amount;
+                    
+                    return (
+                      <View style={[styles.txTableRow, isGoldExchange && { backgroundColor: '#fffbeb' }]}>
+                        {/* 1. Date & Label */}
+                        <View style={{ width: 120 }}>
+                          <Text style={{ fontSize: 12 }}>
+                            {new Date(item.created_at).toLocaleDateString("en-IN")}
+                          </Text>
+                          <Text style={{ fontSize: 10, color: isGoldExchange ? '#b45309' : '#64748b' }}>
+                            {isGoldExchange ? '🏆 Gold Sale' : '💳 Wallet Topup'}
+                          </Text>
+                        </View>
+
+                        {/* 2. Paid / Sell Amount */}
+                        <Text style={{ width: 80, textAlign: 'right', fontSize: 12 }}>
+                          ₹{Number(isGoldExchange ? item.sell_amount : item.paid_amount || 0).toFixed(0)}
+                        </Text>
+
+                        {/* 3. Fee / Grams (FIXED: Moved textAlign to the Text component) */}
+                        <View style={{ width: 70 }}> 
+                          {isGoldExchange ? (
+                            <Text style={{ fontSize: 11, color: '#b45309', textAlign: 'right' }}>
+                              {item.gold_grams}g
+                            </Text>
+                          ) : (
+                            <Text style={{ fontSize: 11, color: '#e67e22', textAlign: 'right' }}>
+                              -₹{(Number(item.razorpay_fee || 0) + Number(item.gst || 0)).toFixed(1)}
+                            </Text>
+                          )}
+                        </View>
+
+                        {/* 4. Final Credited Amount */}
+                        <Text style={{ width: 90, textAlign: 'right', fontSize: 13, fontWeight: 'bold', color: '#27ae60' }}>
+                          ₹{Number(item.credited_amount || item.amount || item.sell_amount || 0).toFixed(2)}
+                        </Text>
+                      </View>
+                    );
+                  }}
+                />
+              </View>
+            </ScrollView>
           </View>
         </Modal>
         {/* Injection Modal */}
@@ -2434,6 +2811,53 @@ const renderBanners = () => (
             </View>
           </View>
         </Modal>
+        {/* Corporate Gift Vouchers Modal */}
+        <Modal visible={showCorporateGiftModal} transparent animationType="slide">
+          <View style={styles.wallet_modalOverlay}>
+            <View style={[styles.wallet_bottomSheet, { minHeight: 550 }]}>
+              <Text style={styles.wallet_modalTitle}>🎁 Corporate Gift Vouchers</Text>
+
+              <ScrollView showsVerticalScrollIndicator={false}>
+                <Text style={styles.wallet_inputLabel}>Staff Details (Name, Phone, Birthday)</Text>
+                <TextInput
+                  style={[styles.wallet_textArea, { height: 120 }]}
+                  multiline
+                  placeholder="Rahul Kumar, 9876543210, 1995-08-12&#10;Anita Sharma, 9123456789"
+                  value={staffDataText}
+                  onChangeText={setStaffDataText}
+                />
+                
+                <Text style={{ fontSize: 11, color: '#64748b', marginBottom: 15 }}>
+                  Format: One staff per line. Birthday is optional.
+                </Text>
+
+                <Text style={styles.wallet_inputLabel}>Amount per Voucher (₹)</Text>
+                <TextInput
+                  style={styles.wallet_amountInput}
+                  placeholder="Enter Amount"
+                  keyboardType="numeric"
+                  value={corpAmount}
+                  onChangeText={setCorpAmount}
+                />
+
+                <TouchableOpacity 
+                  style={[styles.wallet_proceedBtn, { backgroundColor: '#eb4d4b' }]}
+                  onPress={handleCorporateGiftSubmission}
+                >
+                  <Text style={styles.wallet_proceedBtnText}>Review Breakdown</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={{ marginVertical: 15, alignItems: 'center' }}
+                  onPress={() => setShowCorporateGiftModal(false)}
+                >
+                  <Text style={{ color: '#64748b' }}>Cancel</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </View>
+        </Modal>
+
         {/* Gold Sell Modal */}
         <Modal visible={showGoldSellModal} transparent animationType="fade">
           <View style={styles.wallet_modalOverlay}>
@@ -2458,9 +2882,22 @@ const renderBanners = () => (
               </View>
 
               {goldPreview && (
-                <View style={{ backgroundColor: '#fff7ed', padding: 15, borderRadius: 10, marginVertical: 15 }}>
-                  <Text style={{ fontWeight: 'bold' }}>Customer: {goldPreview.name}</Text>
-                  <Text>Max Exchangeable: ₹{goldPreview.max_amount}</Text>
+                <View style={styles.goldPreviewContainer}>
+                  <Text style={styles.goldPreviewTitle}>🏆 Customer Found</Text>
+                  <Text style={styles.goldPreviewText}>Name: <Text style={{fontWeight: 'bold'}}>{goldPreview.name}</Text></Text>
+                  <Text style={styles.goldPreviewText}>Total Balance: <Text style={{fontWeight: 'bold'}}>{goldPreview.sellable_grams} g</Text></Text>
+                  
+                  {goldRates && (
+                    <View style={styles.goldRatesBox}>
+                      <Text style={styles.goldRateText}>
+                        🏷️ Current Exchange Rate: <Text style={{fontWeight: 'bold'}}>₹{goldRates.sell.price_per_gram}/g</Text>
+                      </Text>
+                    </View>
+                  )}
+
+                  <Text style={styles.goldMaxAmount}>
+                    Max Exchangeable: <Text style={{color: '#27ae60', fontWeight: 'bold'}}>₹{Math.floor(goldPreview.max_amount)}</Text>
+                  </Text>
                 </View>
               )}
 
@@ -3365,6 +3802,62 @@ const styles = StyleSheet.create({
   wallet_dismissBtn: {
     padding: 4,
     marginLeft: 8,
+  },
+  txTableHeader: {
+    flexDirection: 'row',
+    backgroundColor: '#f8fafc',
+    padding: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  txHeaderText: {
+    fontWeight: 'bold',
+    color: '#64748b',
+    fontSize: 13,
+  },
+  txTableRow: {
+    flexDirection: 'row',
+    padding: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+    alignItems: 'center',
+  },
+
+  goldPreviewContainer: {
+    backgroundColor: '#FFF9F0',
+    padding: 15,
+    borderRadius: 12,
+    marginVertical: 15,
+    borderWidth: 1,
+    borderColor: '#FEEFC3',
+  },
+  goldPreviewTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#B45309',
+    marginBottom: 5,
+  },
+  goldPreviewText: {
+    fontSize: 14,
+    color: '#4B5563',
+    marginBottom: 5,
+  },
+  goldRatesBox: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#fff',
+    padding: 10,
+    borderRadius: 8,
+    marginVertical: 10,
+  },
+  goldRateText: {
+    fontSize: 12,
+    color: '#4B5563',
+  },
+  goldMaxAmount: {
+    fontSize: 14,
+    color: '#1F2937',
+    marginTop: 5,
   },
   bottomNav: { 
     position: 'absolute', 
